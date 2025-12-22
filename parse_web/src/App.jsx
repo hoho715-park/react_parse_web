@@ -393,6 +393,60 @@ const App = () => {
     setCurrentStep('');
   };
 
+  const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, title: '', desc: '' });
+
+  const showTooltip = (e, title, desc) => {
+    const x = e.clientX;
+    const y = e.clientY;
+    setTooltip({ visible: true, x, y, title, desc });
+  };
+  const moveTooltip = (e) => {
+    setTooltip(t => t.visible ? { ...t, x: e.clientX, y: e.clientY } : t);
+  };
+  const hideTooltip = () => setTooltip({ visible: false, x: 0, y: 0, title: '', desc: '' });
+
+  const metricDescriptions = {
+    LOC: '총 코드 줄 수(프로젝트 합계). 줄 수가 많을수록 유지보수가 어려워질 수 있습니다.',
+    Cyclomatic: '순환 복잡도: 분기/조건/반복문의 수를 기반으로 계산됩니다. 값이 클수록 리팩토링 권장.',
+    CBO: '결합도(Coupling Between Objects): 모듈 간 의존성 척도입니다. 낮을수록 좋습니다.',
+    WMC: '메서드 복잡도(Weighted Methods per Class): 메서드의 복잡도 합계입니다.',
+    MI: '유지보수 지수(Maintainability Index): 값이 클수록 유지보수가 쉽습니다.',
+  };
+
+  const barDescriptions = {
+    '함수 복잡도': '파일 내 함수들의 평균 복잡도(높을수록 복잡함).',
+    '변수 관리': '프로젝트 전체 변수 사용량 기반의 관리 지표(낮을수록 관리 용이).',
+    '이벤트 핸들러': '등록된 이벤트 핸들러 수(과다하면 복잡도 증가).',
+    '유지보수 지수': '파일들의 평균 유지보수 지수(MI). 값이 높을수록 좋음.',
+  };
+
+  const getScoreCategory = (v) => {
+    if (v >= 80) return '우수 (80-100)';
+    if (v >= 60) return '양호 (60-79)';
+    if (v >= 40) return '보통 (40-59)';
+    return '개선 필요 (0-39)';
+  };
+
+  const renderRadarTick = (props) => {
+    const { x, y, payload } = props;
+    const label = payload.value;
+    return (
+      <text
+        x={x}
+        y={y}
+        textAnchor="middle"
+        fill="#374151"
+        fontSize={12}
+        style={{ cursor: 'help' }}
+        onMouseEnter={(e) => showTooltip(e, label, metricDescriptions[label] || '')}
+        onMouseMove={moveTooltip}
+        onMouseLeave={hideTooltip}
+      >
+        {label}
+      </text>
+    );
+  };
+
   if (screen === 'upload') {
     return (
       <div style={styles.containerUpload}>
@@ -515,6 +569,18 @@ const App = () => {
     return (
       <div style={styles.container}>
         <QualityInfoModal isOpen={showQualityInfo} onClose={() => setShowQualityInfo(false)} />
+        {tooltip.visible && (
+          <div
+            style={{
+              ...styles.tooltipBox,
+              left: tooltip.x + 12,
+              top: tooltip.y + 12,
+            }}
+          >
+            <div style={styles.tooltipTitle}>{tooltip.title}</div>
+            <div style={styles.tooltipDesc}>{tooltip.desc}</div>
+          </div>
+        )}
         
         <div style={styles.resultsHeader}>
           <button style={styles.backButton} onClick={resetApp}>
@@ -557,8 +623,19 @@ const App = () => {
             <div style={styles.barChartContainer}>
               {qualityBarData.map((item, index) => (
                 <div key={index} style={styles.barRow}>
-                  <span style={styles.barLabel}>{item.name}</span>
-                  <div style={styles.barTrack}>
+                  <span
+                    style={{ ...styles.barLabel, cursor: 'help' }}
+                    onMouseEnter={(e) => showTooltip(e, item.name, barDescriptions[item.name] || '')}
+                    onMouseMove={moveTooltip}
+                    onMouseLeave={hideTooltip}
+                  >
+                    {item.name}
+                  </span>
+                  <div style={styles.barTrack}
+                    onMouseEnter={(e) => showTooltip(e, `${item.name} — ${item.value}점`, `${getScoreCategory(item.value)}\n${barDescriptions[item.name] || ''}`)}
+                    onMouseMove={moveTooltip}
+                    onMouseLeave={hideTooltip}
+                  >
                     <div 
                       style={{
                         ...styles.barFill,
@@ -580,7 +657,7 @@ const App = () => {
           <ResponsiveContainer width="100%" height={300}>
             <RadarChart data={radarData}>
               <PolarGrid stroke="#e5e7eb" />
-              <PolarAngleAxis dataKey="subject" tick={{ fill: '#374151', fontSize: 12 }} />
+              <PolarAngleAxis dataKey="subject" tick={renderRadarTick} />
               <PolarRadiusAxis 
                 angle={90} 
                 domain={[0, 100]} 
@@ -1187,6 +1264,25 @@ const styles = {
     width: '12px',
     height: '12px',
     borderRadius: '50%',
+  },
+  tooltipBox: {
+    position: 'fixed',
+    background: '#111827',
+    color: '#fff',
+    padding: '10px 12px',
+    borderRadius: '8px',
+    fontSize: '13px',
+    boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
+    pointerEvents: 'none',
+    zIndex: 2000,
+  },
+  tooltipTitle: {
+    fontWeight: '700',
+    marginBottom: '6px',
+  },
+  tooltipDesc: {
+    whiteSpace: 'pre-line',
+    lineHeight: '1.4',
   },
 };
 
