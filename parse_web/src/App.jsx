@@ -38,10 +38,19 @@ const analyzeCode = (code, filename) => {
         cbo: 0,
         wmc: 0,
         maintainabilityIndex: 100,
+      },
+      stateAnalysis: {
+        states: [],
+        transitions: [],
+        effects: [],
+        renders: [],
       }
     };
 
-    const traverse = (node, depth = 0) => {
+    let currentComponent = null;
+    const stateSetters = {};
+
+    const traverse = (node, depth = 0, parentComponent = null) => {
       if (!node || typeof node !== 'object') return;
       
       analysis.complexity.depth = Math.max(analysis.complexity.depth, depth);
@@ -51,6 +60,11 @@ const analyzeCode = (code, filename) => {
         analysis.metrics.wmc++;
         if (/^[A-Z]/.test(node.id.name)) {
           analysis.components.push(node.id.name);
+          currentComponent = node.id.name;
+          analysis.stateAnalysis.renders.push({
+            component: node.id.name,
+            type: 'FunctionComponent'
+          });
         }
       }
 
@@ -62,6 +76,11 @@ const analyzeCode = (code, filename) => {
             analysis.metrics.wmc++;
             if (/^[A-Z]/.test(node.id.name)) {
               analysis.components.push(node.id.name);
+              currentComponent = node.id.name;
+              analysis.stateAnalysis.renders.push({
+                component: node.id.name,
+                type: 'FunctionComponent'
+              });
             }
             if (/^(handle|on)[A-Z]/.test(node.id.name)) {
               analysis.eventHandlers.push(node.id.name);
@@ -72,11 +91,73 @@ const analyzeCode = (code, filename) => {
             analysis.variables.push(node.id.name);
           }
         }
+
+        if (node.id?.type === 'ArrayPattern' && 
+            node.init?.callee?.name === 'useState') {
+          const stateName = node.id.elements?.[0]?.name;
+          const setterName = node.id.elements?.[1]?.name;
+          const initialValue = node.init.arguments?.[0];
+          
+          let initialValueStr = 'undefined';
+          if (initialValue) {
+            if (initialValue.type === 'StringLiteral') initialValueStr = `"${initialValue.value}"`;
+            else if (initialValue.type === 'NumericLiteral') initialValueStr = String(initialValue.value);
+            else if (initialValue.type === 'BooleanLiteral') initialValueStr = String(initialValue.value);
+            else if (initialValue.type === 'NullLiteral') initialValueStr = 'null';
+            else if (initialValue.type === 'ArrayExpression') initialValueStr = '[]';
+            else if (initialValue.type === 'ObjectExpression') initialValueStr = '{}';
+            else if (initialValue.type === 'ArrowFunctionExpression') initialValueStr = '() => ...';
+          }
+
+          if (stateName) {
+            analysis.stateAnalysis.states.push({
+              name: stateName,
+              setter: setterName,
+              initialValue: initialValueStr,
+              component: currentComponent || 'Unknown',
+            });
+            if (setterName) {
+              stateSetters[setterName] = stateName;
+            }
+          }
+        }
       }
 
-      if (node.type === 'CallExpression' && 
-          node.callee?.name?.startsWith('use')) {
-        analysis.hooks.push(node.callee.name);
+      if (node.type === 'CallExpression') {
+        if (node.callee?.name?.startsWith('use')) {
+          analysis.hooks.push(node.callee.name);
+          
+          if (node.callee.name === 'useEffect') {
+            const deps = node.arguments?.[1]?.elements?.map(e => e?.name).filter(Boolean) || [];
+            analysis.stateAnalysis.effects.push({
+              component: currentComponent || 'Unknown',
+              dependencies: deps,
+              type: 'useEffect'
+            });
+          }
+          
+          if (node.callee.name === 'useCallback' || node.callee.name === 'useMemo') {
+            const deps = node.arguments?.[1]?.elements?.map(e => e?.name).filter(Boolean) || [];
+            analysis.stateAnalysis.effects.push({
+              component: currentComponent || 'Unknown',
+              dependencies: deps,
+              type: node.callee.name
+            });
+          }
+        }
+
+        if (node.callee?.name && stateSetters[node.callee.name]) {
+          const stateName = stateSetters[node.callee.name];
+          let trigger = 'direct call';
+          
+          analysis.stateAnalysis.transitions.push({
+            from: stateName,
+            to: stateName,
+            trigger: trigger,
+            setter: node.callee.name,
+            component: currentComponent || 'Unknown',
+          });
+        }
       }
 
       if (node.type === 'ImportDeclaration') {
@@ -129,9 +210,9 @@ const analyzeCode = (code, filename) => {
         if (key === 'loc' || key === 'range' || key === 'start' || key === 'end') continue;
         const child = node[key];
         if (Array.isArray(child)) {
-          child.forEach(c => traverse(c, depth + 1));
+          child.forEach(c => traverse(c, depth + 1, currentComponent));
         } else if (child && typeof child === 'object') {
-          traverse(child, depth + 1);
+          traverse(child, depth + 1, currentComponent);
         }
       }
     };
@@ -392,6 +473,528 @@ const CustomAxisTick = ({ payload, x, y, cx, cy }) => {
   );
 };
 
+const StateDiagram = ({ stateAnalysis, components }) => {
+  const [hoveredNode, setHoveredNode] = useState(null);
+  
+  const { states, transitions, effects } = stateAnalysis;
+  
+  const nodeWidth = 140;
+  const nodeHeight = 50;
+  const padding = 40;
+  
+  const diagramNodes = [];
+  const diagramEdges = [];
+  
+  diagramNodes.push({
+    id: 'start',
+    type: 'start',
+    label: '시작',
+    x: padding,
+    y: 150,
+    description: '컴포넌트가 마운트되기 전 초기 상태입니다.'
+  });
+  
+  diagramNodes.push({
+    id: 'mount',
+    type: 'lifecycle',
+    label: '컴포넌트 마운트',
+    x: padding + 100,
+    y: 150,
+    description: '컴포넌트가 DOM에 삽입되는 단계입니다. useEffect의 setup 함수가 실행됩니다.'
+  });
+  
+  diagramEdges.push({
+    from: 'start',
+    to: 'mount',
+    label: '초기화'
+  });
+  
+  const groupedStates = {};
+  states.forEach(state => {
+    if (!groupedStates[state.component]) {
+      groupedStates[state.component] = [];
+    }
+    groupedStates[state.component].push(state);
+  });
+  
+  let yOffset = 60;
+  let stateIndex = 0;
+  
+  Object.entries(groupedStates).forEach(([component, componentStates], groupIndex) => {
+    const groupStartX = padding + 280;
+    const groupWidth = Math.max(300, componentStates.length * 180);
+    
+    diagramNodes.push({
+      id: `group-${component}`,
+      type: 'group',
+      label: component,
+      x: groupStartX - 20,
+      y: yOffset - 30,
+      width: groupWidth,
+      height: componentStates.length > 2 ? 200 : 150,
+      description: `${component} 컴포넌트의 상태 관리 영역입니다.`
+    });
+    
+    componentStates.forEach((state, idx) => {
+      const xPos = groupStartX + (idx % 2) * 160;
+      const yPos = yOffset + Math.floor(idx / 2) * 80 + 20;
+      
+      diagramNodes.push({
+        id: `state-${state.name}`,
+        type: 'state',
+        label: state.name,
+        sublabel: `초기값: ${state.initialValue}`,
+        x: xPos,
+        y: yPos,
+        setter: state.setter,
+        description: `useState로 관리되는 상태입니다.\n• 상태명: ${state.name}\n• setter: ${state.setter}\n• 초기값: ${state.initialValue}`
+      });
+      
+      if (idx === 0) {
+        diagramEdges.push({
+          from: 'mount',
+          to: `state-${state.name}`,
+          label: '상태 초기화'
+        });
+      }
+      
+      stateIndex++;
+    });
+    
+    yOffset += componentStates.length > 2 ? 220 : 170;
+  });
+  
+  transitions.forEach((transition, idx) => {
+    const existingEdge = diagramEdges.find(
+      e => e.from === `state-${transition.from}` && e.to === `state-${transition.to}` && e.isSelfLoop
+    );
+    
+    if (!existingEdge) {
+      diagramEdges.push({
+        from: `state-${transition.from}`,
+        to: `state-${transition.to}`,
+        label: transition.setter,
+        isSelfLoop: transition.from === transition.to,
+        description: `${transition.setter}() 호출로 상태가 업데이트됩니다.`
+      });
+    }
+  });
+  
+  effects.forEach((effect, idx) => {
+    if (effect.dependencies.length > 0) {
+      effect.dependencies.forEach(dep => {
+        const stateNode = diagramNodes.find(n => n.id === `state-${dep}`);
+        if (stateNode) {
+          diagramEdges.push({
+            from: `state-${dep}`,
+            to: `effect-${idx}`,
+            label: '의존성',
+            isEffect: true
+          });
+        }
+      });
+      
+      diagramNodes.push({
+        id: `effect-${idx}`,
+        type: 'effect',
+        label: effect.type,
+        x: padding + 600,
+        y: 80 + idx * 70,
+        description: `${effect.type} 훅입니다.\n의존성: [${effect.dependencies.join(', ')}]\n의존성 배열의 값이 변경될 때 실행됩니다.`
+      });
+    }
+  });
+  
+  const renderActions = [];
+  states.forEach(state => {
+    renderActions.push({
+      stateName: state.name,
+      action: '리렌더링 트리거'
+    });
+  });
+  
+  if (renderActions.length > 0) {
+    diagramNodes.push({
+      id: 'render',
+      type: 'lifecycle',
+      label: '리렌더링',
+      x: padding + 600,
+      y: 280,
+      description: '상태가 변경되면 컴포넌트가 리렌더링됩니다.\nReact는 Virtual DOM을 비교하여 실제 DOM을 효율적으로 업데이트합니다.'
+    });
+    
+    states.forEach(state => {
+      diagramEdges.push({
+        from: `state-${state.name}`,
+        to: 'render',
+        label: '상태 변경',
+        isDashed: true
+      });
+    });
+  }
+  
+  diagramNodes.push({
+    id: 'unmount',
+    type: 'end',
+    label: '언마운트',
+    x: padding + 750,
+    y: 150,
+    description: '컴포넌트가 DOM에서 제거되는 단계입니다.\nuseEffect의 cleanup 함수가 실행됩니다.'
+  });
+  
+  diagramEdges.push({
+    from: 'render',
+    to: 'unmount',
+    label: '컴포넌트 제거',
+    isDashed: true
+  });
+
+  const svgWidth = 900;
+  const svgHeight = Math.max(400, yOffset + 100);
+
+  const getNodeCenter = (node) => {
+    if (node.type === 'start' || node.type === 'end') {
+      return { x: node.x + 15, y: node.y + 15 };
+    }
+    return { x: node.x + nodeWidth / 2, y: node.y + nodeHeight / 2 };
+  };
+
+  const renderEdge = (edge, idx) => {
+    const fromNode = diagramNodes.find(n => n.id === edge.from);
+    const toNode = diagramNodes.find(n => n.id === edge.to);
+    
+    if (!fromNode || !toNode) return null;
+    
+    const from = getNodeCenter(fromNode);
+    const to = getNodeCenter(toNode);
+    
+    if (edge.isSelfLoop) {
+      const loopPath = `M ${from.x + 40} ${from.y - 20} 
+                        C ${from.x + 80} ${from.y - 60} 
+                          ${from.x + 80} ${from.y + 60} 
+                          ${from.x + 40} ${from.y + 20}`;
+      return (
+        <g key={idx}>
+          <path
+            d={loopPath}
+            fill="none"
+            stroke="#6366f1"
+            strokeWidth="2"
+            markerEnd="url(#arrowhead)"
+          />
+          <text
+            x={from.x + 90}
+            y={from.y}
+            fontSize="10"
+            fill="#6366f1"
+            textAnchor="start"
+          >
+            {edge.label}
+          </text>
+        </g>
+      );
+    }
+    
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    
+    return (
+      <g key={idx}>
+        <line
+          x1={from.x}
+          y1={from.y}
+          x2={to.x}
+          y2={to.y}
+          stroke={edge.isEffect ? '#22c55e' : edge.isDashed ? '#9ca3af' : '#6366f1'}
+          strokeWidth="2"
+          strokeDasharray={edge.isDashed ? '5,5' : 'none'}
+          markerEnd="url(#arrowhead)"
+        />
+        {edge.label && (
+          <text
+            x={midX}
+            y={midY - 8}
+            fontSize="10"
+            fill="#6b7280"
+            textAnchor="middle"
+            style={{ background: '#ffffff' }}
+          >
+            {edge.label}
+          </text>
+        )}
+      </g>
+    );
+  };
+
+  const renderNode = (node) => {
+    const isHovered = hoveredNode === node.id;
+    
+    if (node.type === 'start') {
+      return (
+        <g 
+          key={node.id}
+          onMouseEnter={() => setHoveredNode(node.id)}
+          onMouseLeave={() => setHoveredNode(null)}
+          style={{ cursor: 'pointer' }}
+        >
+          <circle
+            cx={node.x + 15}
+            cy={node.y + 15}
+            r="15"
+            fill="#1f2937"
+          />
+          {isHovered && (
+            <foreignObject x={node.x - 50} y={node.y + 40} width="150" height="60">
+              <div style={styles.diagramTooltip}>{node.description}</div>
+            </foreignObject>
+          )}
+        </g>
+      );
+    }
+    
+    if (node.type === 'end') {
+      return (
+        <g 
+          key={node.id}
+          onMouseEnter={() => setHoveredNode(node.id)}
+          onMouseLeave={() => setHoveredNode(null)}
+          style={{ cursor: 'pointer' }}
+        >
+          <circle
+            cx={node.x + 15}
+            cy={node.y + 15}
+            r="15"
+            fill="none"
+            stroke="#1f2937"
+            strokeWidth="3"
+          />
+          <circle
+            cx={node.x + 15}
+            cy={node.y + 15}
+            r="10"
+            fill="#1f2937"
+          />
+          <text
+            x={node.x + 15}
+            y={node.y + 45}
+            fontSize="11"
+            fill="#374151"
+            textAnchor="middle"
+          >
+            {node.label}
+          </text>
+          {isHovered && (
+            <foreignObject x={node.x - 50} y={node.y + 55} width="150" height="80">
+              <div style={styles.diagramTooltip}>{node.description}</div>
+            </foreignObject>
+          )}
+        </g>
+      );
+    }
+    
+    if (node.type === 'group') {
+      return (
+        <g key={node.id}>
+          <rect
+            x={node.x}
+            y={node.y}
+            width={node.width}
+            height={node.height}
+            fill="#f8fafc"
+            stroke="#e5e7eb"
+            strokeWidth="1"
+            rx="8"
+          />
+          <text
+            x={node.x + 10}
+            y={node.y + 20}
+            fontSize="12"
+            fill="#6b7280"
+            fontWeight="600"
+          >
+            {node.label}
+          </text>
+        </g>
+      );
+    }
+    
+    if (node.type === 'state') {
+      return (
+        <g 
+          key={node.id}
+          onMouseEnter={() => setHoveredNode(node.id)}
+          onMouseLeave={() => setHoveredNode(null)}
+          style={{ cursor: 'pointer' }}
+        >
+          <rect
+            x={node.x}
+            y={node.y}
+            width={nodeWidth}
+            height={nodeHeight}
+            fill={isHovered ? '#dbeafe' : '#3b82f6'}
+            stroke={isHovered ? '#3b82f6' : '#2563eb'}
+            strokeWidth="2"
+            rx="8"
+          />
+          <text
+            x={node.x + nodeWidth / 2}
+            y={node.y + 20}
+            fontSize="12"
+            fill={isHovered ? '#1e40af' : '#ffffff'}
+            textAnchor="middle"
+            fontWeight="600"
+          >
+            {node.label}
+          </text>
+          <text
+            x={node.x + nodeWidth / 2}
+            y={node.y + 38}
+            fontSize="10"
+            fill={isHovered ? '#3b82f6' : '#bfdbfe'}
+            textAnchor="middle"
+          >
+            {node.sublabel}
+          </text>
+          {isHovered && (
+            <foreignObject x={node.x} y={node.y + nodeHeight + 10} width="180" height="100">
+              <div style={styles.diagramTooltip}>{node.description}</div>
+            </foreignObject>
+          )}
+        </g>
+      );
+    }
+    
+    if (node.type === 'lifecycle') {
+      return (
+        <g 
+          key={node.id}
+          onMouseEnter={() => setHoveredNode(node.id)}
+          onMouseLeave={() => setHoveredNode(null)}
+          style={{ cursor: 'pointer' }}
+        >
+          <rect
+            x={node.x}
+            y={node.y}
+            width={nodeWidth}
+            height={nodeHeight}
+            fill={isHovered ? '#fef3c7' : '#fbbf24'}
+            stroke={isHovered ? '#f59e0b' : '#d97706'}
+            strokeWidth="2"
+            rx="8"
+          />
+          <text
+            x={node.x + nodeWidth / 2}
+            y={node.y + nodeHeight / 2 + 4}
+            fontSize="12"
+            fill={isHovered ? '#92400e' : '#ffffff'}
+            textAnchor="middle"
+            fontWeight="600"
+          >
+            {node.label}
+          </text>
+          {isHovered && (
+            <foreignObject x={node.x - 20} y={node.y + nodeHeight + 10} width="200" height="100">
+              <div style={styles.diagramTooltip}>{node.description}</div>
+            </foreignObject>
+          )}
+        </g>
+      );
+    }
+    
+    if (node.type === 'effect') {
+      return (
+        <g 
+          key={node.id}
+          onMouseEnter={() => setHoveredNode(node.id)}
+          onMouseLeave={() => setHoveredNode(null)}
+          style={{ cursor: 'pointer' }}
+        >
+          <rect
+            x={node.x}
+            y={node.y}
+            width={nodeWidth - 20}
+            height={nodeHeight - 10}
+            fill={isHovered ? '#dcfce7' : '#22c55e'}
+            stroke={isHovered ? '#22c55e' : '#16a34a'}
+            strokeWidth="2"
+            rx="8"
+          />
+          <text
+            x={node.x + (nodeWidth - 20) / 2}
+            y={node.y + (nodeHeight - 10) / 2 + 4}
+            fontSize="11"
+            fill={isHovered ? '#166534' : '#ffffff'}
+            textAnchor="middle"
+            fontWeight="600"
+          >
+            {node.label}
+          </text>
+          {isHovered && (
+            <foreignObject x={node.x - 20} y={node.y + nodeHeight} width="180" height="80">
+              <div style={styles.diagramTooltip}>{node.description}</div>
+            </foreignObject>
+          )}
+        </g>
+      );
+    }
+    
+    return null;
+  };
+
+  if (states.length === 0) {
+    return (
+      <div style={styles.emptyDiagram}>
+        <p>📭 분석된 상태(useState)가 없습니다.</p>
+        <p style={{ fontSize: '13px', color: '#9ca3af' }}>
+          useState를 사용하는 React 컴포넌트를 분석하면 상태 다이어그램이 생성됩니다.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.diagramContainer}>
+      <svg width={svgWidth} height={svgHeight} style={{ overflow: 'visible' }}>
+        <defs>
+          <marker
+            id="arrowhead"
+            markerWidth="10"
+            markerHeight="7"
+            refX="9"
+            refY="3.5"
+            orient="auto"
+          >
+            <polygon points="0 0, 10 3.5, 0 7" fill="#6366f1" />
+          </marker>
+        </defs>
+        
+        {diagramNodes.filter(n => n.type === 'group').map(renderNode)}
+        {diagramEdges.map(renderEdge)}
+        {diagramNodes.filter(n => n.type !== 'group').map(renderNode)}
+      </svg>
+      
+      <div style={styles.diagramLegend}>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendDot, background: '#1f2937' }}></div>
+          <span>시작/종료</span>
+        </div>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendDot, background: '#3b82f6' }}></div>
+          <span>상태 (useState)</span>
+        </div>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendDot, background: '#fbbf24' }}></div>
+          <span>라이프사이클</span>
+        </div>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendDot, background: '#22c55e' }}></div>
+          <span>Effect (useEffect)</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   const [screen, setScreen] = useState('upload');
   const [results, setResults] = useState(null);
@@ -412,17 +1015,26 @@ const App = () => {
         const zip = new JSZip();
         const contents = await zip.loadAsync(file);
         
-        const entries = Object.entries(contents.files);
-        for (let i = 0; i < entries.length; i++) {
-          const [path, zipEntry] = entries[i];
-          if (!zipEntry.dir && (path.endsWith('.js') || path.endsWith('.jsx') || path.endsWith('.tsx') || path.endsWith('.ts'))) {
-            if (!path.includes('node_modules')) {
-              const content = await zipEntry.async('string');
-              fileList.push({ name: path, content });
-            }
-          }
-          setProgress(Math.round((i / entries.length) * 25));
-          await new Promise(r => setTimeout(r, 30));
+        const allPaths = Object.keys(contents.files);
+        const validPaths = allPaths.filter(path => {
+          if (contents.files[path].dir) return false;
+          if (path.includes('node_modules/')) return false;
+          if (path.includes('/.')) return false;
+          if (path.startsWith('.')) return false;
+          if (path.includes('/build/')) return false;
+          if (path.includes('/dist/')) return false;
+          if (!path.match(/\.(js|jsx|ts|tsx)$/)) return false;
+          return true;
+        });
+        
+        setProgress(10);
+        
+        for (let i = 0; i < validPaths.length; i++) {
+          const path = validPaths[i];
+          const zipEntry = contents.files[path];
+          const content = await zipEntry.async('string');
+          fileList.push({ name: path, content });
+          setProgress(10 + Math.round((i / validPaths.length) * 15));
         }
       } else if (file.name.match(/\.(js|jsx|tsx|ts)$/)) {
         const content = await file.text();
@@ -430,11 +1042,13 @@ const App = () => {
       }
     }
 
+    setProgress(25);
     setCurrentStep('AST 변환 중...');
-    for (let i = 0; i <= 25; i++) {
-      setProgress(25 + i);
-      await new Promise(r => setTimeout(r, 60));
-    }
+    
+    await new Promise(r => setTimeout(r, 300));
+    setProgress(40);
+    await new Promise(r => setTimeout(r, 300));
+    setProgress(50);
 
     setCurrentStep('메트릭 계산 중...');
     const analysisResults = [];
@@ -443,16 +1057,34 @@ const App = () => {
       result.qualityScore = calculateQualityScore(result);
       analysisResults.push(result);
       setProgress(50 + Math.round((i / fileList.length) * 25));
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 100));
     }
 
     setCurrentStep('결과 생성 중...');
-    for (let i = 0; i <= 25; i++) {
-      setProgress(75 + i);
-      await new Promise(r => setTimeout(r, 50));
-    }
+    setProgress(80);
+    await new Promise(r => setTimeout(r, 300));
+    setProgress(90);
+    await new Promise(r => setTimeout(r, 300));
+    setProgress(100);
 
     const validResults = analysisResults.filter(r => !r.error);
+    
+    const combinedStateAnalysis = {
+      states: [],
+      transitions: [],
+      effects: [],
+      renders: [],
+    };
+    
+    validResults.forEach(r => {
+      if (r.stateAnalysis) {
+        combinedStateAnalysis.states.push(...r.stateAnalysis.states);
+        combinedStateAnalysis.transitions.push(...r.stateAnalysis.transitions);
+        combinedStateAnalysis.effects.push(...r.stateAnalysis.effects);
+        combinedStateAnalysis.renders.push(...r.stateAnalysis.renders);
+      }
+    });
+    
     const summary = {
       totalFiles: analysisResults.length,
       totalLOC: analysisResults.reduce((sum, r) => sum + (r.loc || 0), 0),
@@ -463,18 +1095,19 @@ const App = () => {
       totalHooks: [...new Set(validResults.flatMap(r => r.hooks || []))],
       totalImports: [...new Set(validResults.flatMap(r => r.imports?.map(i => i.source) || []))],
       totalIssues: validResults.reduce((sum, r) => sum + (r.issues?.length || 0), 0),
-      avgQualityScore: Math.round(
+      avgQualityScore: validResults.length > 0 ? Math.round(
         validResults.reduce((sum, r) => sum + r.qualityScore, 0) / validResults.length
-      ),
-      avgCyclomaticComplexity: Math.round(
+      ) : 0,
+      avgCyclomaticComplexity: validResults.length > 0 ? Math.round(
         validResults.reduce((sum, r) => sum + (r.metrics?.cyclomaticComplexity || 0), 0) / validResults.length
-      ),
-      avgMaintainabilityIndex: Math.round(
+      ) : 0,
+      avgMaintainabilityIndex: validResults.length > 0 ? Math.round(
         validResults.reduce((sum, r) => sum + (r.metrics?.maintainabilityIndex || 0), 0) / validResults.length
-      ),
+      ) : 0,
       totalCBO: validResults.reduce((sum, r) => sum + (r.metrics?.cbo || 0), 0),
       totalWMC: validResults.reduce((sum, r) => sum + (r.metrics?.wmc || 0), 0),
       totalAnalysisTime: validResults.reduce((sum, r) => sum + parseFloat(r.analysisTime || 0), 0).toFixed(2),
+      stateAnalysis: combinedStateAnalysis,
     };
 
     setResults({ files: analysisResults, summary });
@@ -482,7 +1115,7 @@ const App = () => {
     
     setTimeout(() => {
       setScreen('results');
-    }, 800);
+    }, 500);
   }, []);
 
   const handleDrag = useCallback((e) => {
@@ -560,6 +1193,9 @@ const App = () => {
           <h2 style={styles.uploadTitle}>파일을 드래그하거나 클릭하여 업로드</h2>
           <p style={styles.uploadDesc}>
             ZIP 파일 또는 .js, .jsx, .ts, .tsx 파일을 업로드하세요
+          </p>
+          <p style={styles.uploadNote}>
+            ⚡ node_modules, build, dist 폴더는 자동으로 제외됩니다
           </p>
           
           <div style={styles.uploadBadges}>
@@ -725,6 +1361,17 @@ const App = () => {
           </div>
         </div>
 
+        <div style={styles.stateDiagramCard}>
+          <h3 style={styles.chartTitle}>
+            <span style={styles.chartIcon}>🔄</span> 상태 다이어그램 (State Diagram)
+          </h3>
+          <p style={styles.chartHint}>* 각 노드에 마우스를 올려 상세 설명을 확인하세요. 상태(useState)의 흐름과 라이프사이클을 시각화합니다.</p>
+          <StateDiagram 
+            stateAnalysis={results.summary.stateAnalysis} 
+            components={results.summary.totalComponents}
+          />
+        </div>
+
         <div style={styles.filesSection}>
           <h3 style={styles.sectionTitle}>📁 파일별 분석 결과</h3>
           <div style={styles.fileList}>
@@ -876,6 +1523,11 @@ const styles = {
   uploadDesc: {
     color: '#6b7280',
     fontSize: '14px',
+    margin: '0 0 8px 0',
+  },
+  uploadNote: {
+    color: '#9ca3af',
+    fontSize: '12px',
     margin: '0 0 20px 0',
   },
   uploadBadges: {
@@ -1200,6 +1852,55 @@ const styles = {
     borderRadius: '6px',
     fontSize: '13px',
     fontWeight: '500',
+  },
+  stateDiagramCard: {
+    maxWidth: '1200px',
+    margin: '0 auto 24px',
+    padding: '24px',
+    background: '#ffffff',
+    borderRadius: '16px',
+    boxShadow: '0 2px 12px rgba(0, 0, 0, 0.06)',
+    border: '1px solid #f3f4f6',
+    overflow: 'auto',
+  },
+  diagramContainer: {
+    padding: '20px',
+    minWidth: '850px',
+  },
+  diagramLegend: {
+    display: 'flex',
+    gap: '24px',
+    marginTop: '20px',
+    paddingTop: '16px',
+    borderTop: '1px solid #e5e7eb',
+    flexWrap: 'wrap',
+  },
+  legendItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    fontSize: '12px',
+    color: '#6b7280',
+  },
+  legendDot: {
+    width: '14px',
+    height: '14px',
+    borderRadius: '4px',
+  },
+  diagramTooltip: {
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '10px 12px',
+    borderRadius: '8px',
+    fontSize: '11px',
+    lineHeight: '1.5',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+    whiteSpace: 'pre-line',
+  },
+  emptyDiagram: {
+    textAlign: 'center',
+    padding: '40px',
+    color: '#6b7280',
   },
   filesSection: {
     maxWidth: '1200px',
