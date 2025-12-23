@@ -8,6 +8,7 @@ import {
   PolarRadiusAxis,
   Radar,
   ResponsiveContainer,
+  Tooltip,
 } from 'recharts';
 
 const analyzeCode = (code, filename) => {
@@ -267,6 +268,130 @@ const QualityInfoModal = ({ isOpen, onClose }) => {
   );
 };
 
+const TooltipBar = ({ item }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [showValueTooltip, setShowValueTooltip] = useState(false);
+
+  const descriptions = {
+    '함수 복잡도': '코드 내 조건문(if, switch)과 반복문(for, while)의 수를 측정합니다. 값이 낮을수록 코드가 단순하고 이해하기 쉽습니다.',
+    '변수 관리': '선언된 변수의 수와 관리 상태를 평가합니다. 불필요한 변수가 적을수록 점수가 높습니다.',
+    '이벤트 핸들러': '컴포넌트 내 이벤트 핸들러(onClick, onChange 등)의 적절한 사용을 평가합니다.',
+    '유지보수 지수': '코드의 유지보수 용이성을 나타내는 종합 지표입니다. 100에 가까울수록 유지보수가 쉽습니다.',
+  };
+
+  return (
+    <div style={styles.barRow}>
+      <div style={styles.barLabelContainer}>
+        <span 
+          style={styles.barLabel}
+          onMouseEnter={() => setShowTooltip(true)}
+          onMouseLeave={() => setShowTooltip(false)}
+        >
+          {item.name}
+          {showTooltip && (
+            <div style={styles.tooltip}>
+              {descriptions[item.name]}
+            </div>
+          )}
+        </span>
+      </div>
+      <div 
+        style={styles.barTrack}
+        onMouseEnter={() => setShowValueTooltip(true)}
+        onMouseLeave={() => setShowValueTooltip(false)}
+      >
+        <div 
+          style={{
+            ...styles.barFill,
+            width: `${item.value}%`,
+            backgroundColor: item.color,
+          }}
+        />
+        {showValueTooltip && (
+          <div style={styles.barValueTooltip}>
+            {Math.round(item.value)} / 100
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const CustomRadarTooltip = ({ active, payload }) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    return (
+      <div style={styles.radarTooltipBox}>
+        <strong>{data.subject}</strong>: {Math.round(data.A)} / 100
+      </div>
+    );
+  }
+  return null;
+};
+
+const CustomAxisTick = ({ payload, x, y, cx, cy }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+
+  const descriptions = {
+    'LOC': 'Lines of Code\n코드의 총 줄 수입니다.\n파일이 너무 크면 유지보수가 어려워집니다.',
+    'Cyclomatic': 'Cyclomatic Complexity\n순환 복잡도로, 코드의 분기 수를 측정합니다.',
+    'CBO': 'Coupling Between Objects\n다른 모듈과의 결합도입니다.\n낮을수록 독립적인 코드입니다.',
+    'WMC': 'Weighted Methods per Class\n컴포넌트 내 메서드의 복잡도 총합입니다.',
+    'MI': 'Maintainability Index\n유지보수 지수로, 100에 가까울수록 좋습니다.',
+  };
+
+  const getTooltipPosition = () => {
+    const offsetX = x > cx ? -160 : x < cx ? 10 : -75;
+    const offsetY = y > cy ? -80 : y < cy ? 10 : -30;
+    return { offsetX, offsetY };
+  };
+
+  const { offsetX, offsetY } = getTooltipPosition();
+
+  return (
+    <g 
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+      style={{ cursor: 'pointer' }}
+    >
+      <text
+        x={x}
+        y={y}
+        fill="#374151"
+        fontSize={12}
+        textAnchor={x > cx ? 'start' : x < cx ? 'end' : 'middle'}
+        dominantBaseline={y > cy ? 'hanging' : y < cy ? 'auto' : 'middle'}
+      >
+        {payload.value}
+      </text>
+      {showTooltip && (
+        <foreignObject 
+          x={x + offsetX} 
+          y={y + offsetY} 
+          width={150} 
+          height={70}
+          style={{ overflow: 'visible' }}
+        >
+          <div style={{
+            background: '#1f2937',
+            color: '#ffffff',
+            padding: '8px 10px',
+            borderRadius: '6px',
+            fontSize: '11px',
+            lineHeight: '1.4',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            whiteSpace: 'pre-line',
+            position: 'relative',
+            zIndex: 9999,
+          }}>
+            {descriptions[payload.value]}
+          </div>
+        </foreignObject>
+      )}
+    </g>
+  );
+};
+
 const App = () => {
   const [screen, setScreen] = useState('upload');
   const [results, setResults] = useState(null);
@@ -393,60 +518,6 @@ const App = () => {
     setCurrentStep('');
   };
 
-  const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, title: '', desc: '' });
-
-  const showTooltip = (e, title, desc) => {
-    const x = e.clientX;
-    const y = e.clientY;
-    setTooltip({ visible: true, x, y, title, desc });
-  };
-  const moveTooltip = (e) => {
-    setTooltip(t => t.visible ? { ...t, x: e.clientX, y: e.clientY } : t);
-  };
-  const hideTooltip = () => setTooltip({ visible: false, x: 0, y: 0, title: '', desc: '' });
-
-  const metricDescriptions = {
-    LOC: '총 코드 줄 수(프로젝트 합계). 줄 수가 많을수록 유지보수가 어려워질 수 있습니다.',
-    Cyclomatic: '순환 복잡도: 분기/조건/반복문의 수를 기반으로 계산됩니다. 값이 클수록 리팩토링 권장.',
-    CBO: '결합도(Coupling Between Objects): 모듈 간 의존성 척도입니다. 낮을수록 좋습니다.',
-    WMC: '메서드 복잡도(Weighted Methods per Class): 메서드의 복잡도 합계입니다.',
-    MI: '유지보수 지수(Maintainability Index): 값이 클수록 유지보수가 쉽습니다.',
-  };
-
-  const barDescriptions = {
-    '함수 복잡도': '파일 내 함수들의 평균 복잡도(높을수록 복잡함).',
-    '변수 관리': '프로젝트 전체 변수 사용량 기반의 관리 지표(낮을수록 관리 용이).',
-    '이벤트 핸들러': '등록된 이벤트 핸들러 수(과다하면 복잡도 증가).',
-    '유지보수 지수': '파일들의 평균 유지보수 지수(MI). 값이 높을수록 좋음.',
-  };
-
-  const getScoreCategory = (v) => {
-    if (v >= 80) return '우수 (80-100)';
-    if (v >= 60) return '양호 (60-79)';
-    if (v >= 40) return '보통 (40-59)';
-    return '개선 필요 (0-39)';
-  };
-
-  const renderRadarTick = (props) => {
-    const { x, y, payload } = props;
-    const label = payload.value;
-    return (
-      <text
-        x={x}
-        y={y}
-        textAnchor="middle"
-        fill="#374151"
-        fontSize={12}
-        style={{ cursor: 'help' }}
-        onMouseEnter={(e) => showTooltip(e, label, metricDescriptions[label] || '')}
-        onMouseMove={moveTooltip}
-        onMouseLeave={hideTooltip}
-      >
-        {label}
-      </text>
-    );
-  };
-
   if (screen === 'upload') {
     return (
       <div style={styles.containerUpload}>
@@ -569,18 +640,6 @@ const App = () => {
     return (
       <div style={styles.container}>
         <QualityInfoModal isOpen={showQualityInfo} onClose={() => setShowQualityInfo(false)} />
-        {tooltip.visible && (
-          <div
-            style={{
-              ...styles.tooltipBox,
-              left: tooltip.x + 12,
-              top: tooltip.y + 12,
-            }}
-          >
-            <div style={styles.tooltipTitle}>{tooltip.title}</div>
-            <div style={styles.tooltipDesc}>{tooltip.desc}</div>
-          </div>
-        )}
         
         <div style={styles.resultsHeader}>
           <button style={styles.backButton} onClick={resetApp}>
@@ -616,36 +675,19 @@ const App = () => {
             <CircularGauge score={results.summary.avgQualityScore} />
           </div>
 
-          <div style={styles.chartCard}>
-            <h3 style={styles.chartTitle}>
-              <span style={styles.chartIcon}>📈</span> 품질 지표 분석
-            </h3>
-            <div style={styles.barChartContainer}>
-              {qualityBarData.map((item, index) => (
-                <div key={index} style={styles.barRow}>
-                  <span
-                    style={{ ...styles.barLabel, cursor: 'help' }}
-                    onMouseEnter={(e) => showTooltip(e, item.name, barDescriptions[item.name] || '')}
-                    onMouseMove={moveTooltip}
-                    onMouseLeave={hideTooltip}
-                  >
-                    {item.name}
-                  </span>
-                  <div style={styles.barTrack}
-                    onMouseEnter={(e) => showTooltip(e, `${item.name} — ${item.value}점`, `${getScoreCategory(item.value)}\n${barDescriptions[item.name] || ''}`)}
-                    onMouseMove={moveTooltip}
-                    onMouseLeave={hideTooltip}
-                  >
-                    <div 
-                      style={{
-                        ...styles.barFill,
-                        width: `${item.value}%`,
-                        backgroundColor: item.color,
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
+          <div style={styles.chartCardBar}>
+            <div style={styles.chartTitleSection}>
+              <h3 style={styles.chartTitle}>
+                <span style={styles.chartIcon}>📈</span> 품질 지표 분석
+              </h3>
+              <p style={styles.chartHint}>* 각 항목에 마우스를 올려 설명을 확인하세요</p>
+            </div>
+            <div style={styles.barChartWrapper}>
+              <div style={styles.barChartContainer}>
+                {qualityBarData.map((item, index) => (
+                  <TooltipBar key={index} item={item} />
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -654,26 +696,33 @@ const App = () => {
           <h3 style={styles.chartTitle}>
             <span style={styles.chartIcon}>📡</span> 확장 메트릭 레이더
           </h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <RadarChart data={radarData}>
-              <PolarGrid stroke="#e5e7eb" />
-              <PolarAngleAxis dataKey="subject" tick={renderRadarTick} />
-              <PolarRadiusAxis 
-                angle={90} 
-                domain={[0, 100]} 
-                tick={{ fill: '#9ca3af', fontSize: 10 }}
-                axisLine={false}
-              />
-              <Radar
-                name="메트릭"
-                dataKey="A"
-                stroke="#6366f1"
-                fill="#6366f1"
-                fillOpacity={0.3}
-                strokeWidth={2}
-              />
-            </RadarChart>
-          </ResponsiveContainer>
+          <p style={styles.chartHint}>* 각 축 이름에 마우스를 올려 설명을 확인하세요</p>
+          <div style={styles.radarChartWrapper}>
+            <ResponsiveContainer width="100%" height={320}>
+              <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="65%">
+                <PolarGrid stroke="#e5e7eb" />
+                <PolarAngleAxis 
+                  dataKey="subject" 
+                  tick={<CustomAxisTick />}
+                />
+                <PolarRadiusAxis 
+                  angle={90} 
+                  domain={[0, 100]} 
+                  tick={{ fill: '#9ca3af', fontSize: 10 }}
+                  axisLine={false}
+                />
+                <Radar
+                  name="메트릭"
+                  dataKey="A"
+                  stroke="#6366f1"
+                  fill="#6366f1"
+                  fillOpacity={0.3}
+                  strokeWidth={2}
+                />
+                <Tooltip content={<CustomRadarTooltip />} />
+              </RadarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
         <div style={styles.filesSection}>
@@ -986,8 +1035,19 @@ const styles = {
     borderRadius: '16px',
     boxShadow: '0 2px 12px rgba(0, 0, 0, 0.06)',
     border: '1px solid #f3f4f6',
+  },
+  chartCardBar: {
+    padding: '24px',
+    background: '#ffffff',
+    borderRadius: '16px',
+    boxShadow: '0 2px 12px rgba(0, 0, 0, 0.06)',
+    border: '1px solid #f3f4f6',
     display: 'flex',
     flexDirection: 'column',
+    minHeight: '280px',
+  },
+  chartTitleSection: {
+    marginBottom: '0',
   },
   chartTitleRow: {
     display: 'flex',
@@ -1006,6 +1066,11 @@ const styles = {
   },
   chartIcon: {
     fontSize: '18px',
+  },
+  chartHint: {
+    fontSize: '11px',
+    color: '#9ca3af',
+    margin: '8px 0 0 0',
   },
   infoButton: {
     padding: '6px 12px',
@@ -1043,35 +1108,76 @@ const styles = {
     display: 'block',
     marginTop: '4px',
   },
+  barChartWrapper: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   barChartContainer: {
     display: 'flex',
     flexDirection: 'column',
     gap: '16px',
-    flex: 1,
-    justifyContent: 'center',
+    width: '100%',
   },
   barRow: {
     display: 'flex',
     alignItems: 'center',
     gap: '12px',
   },
-  barLabel: {
+  barLabelContainer: {
+    position: 'relative',
     width: '100px',
+    textAlign: 'right',
+  },
+  barLabel: {
     fontSize: '13px',
     color: '#4b5563',
-    textAlign: 'right',
+    cursor: 'pointer',
+    borderBottom: '1px dashed #9ca3af',
+  },
+  tooltip: {
+    position: 'absolute',
+    bottom: '100%',
+    right: 0,
+    marginBottom: '8px',
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '10px 12px',
+    borderRadius: '8px',
+    fontSize: '12px',
+    lineHeight: '1.5',
+    width: '200px',
+    zIndex: 100,
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
   },
   barTrack: {
     flex: 1,
-    height: '20px',
+    height: '24px',
     background: '#f3f4f6',
     borderRadius: '4px',
-    overflow: 'hidden',
+    overflow: 'visible',
+    position: 'relative',
+    cursor: 'pointer',
   },
   barFill: {
     height: '100%',
     borderRadius: '4px',
     transition: 'width 1s ease-out',
+  },
+  barValueTooltip: {
+    position: 'absolute',
+    top: '-32px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '4px 10px',
+    borderRadius: '6px',
+    fontSize: '12px',
+    fontWeight: '600',
+    whiteSpace: 'nowrap',
+    zIndex: 100,
   },
   radarCard: {
     maxWidth: '1200px',
@@ -1081,6 +1187,19 @@ const styles = {
     borderRadius: '16px',
     boxShadow: '0 2px 12px rgba(0, 0, 0, 0.06)',
     border: '1px solid #f3f4f6',
+    overflow: 'visible',
+  },
+  radarChartWrapper: {
+    padding: '20px 40px',
+    overflow: 'visible',
+  },
+  radarTooltipBox: {
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '8px 12px',
+    borderRadius: '6px',
+    fontSize: '13px',
+    fontWeight: '500',
   },
   filesSection: {
     maxWidth: '1200px',
@@ -1264,25 +1383,6 @@ const styles = {
     width: '12px',
     height: '12px',
     borderRadius: '50%',
-  },
-  tooltipBox: {
-    position: 'fixed',
-    background: '#111827',
-    color: '#fff',
-    padding: '10px 12px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    boxShadow: '0 6px 18px rgba(0,0,0,0.18)',
-    pointerEvents: 'none',
-    zIndex: 2000,
-  },
-  tooltipTitle: {
-    fontWeight: '700',
-    marginBottom: '6px',
-  },
-  tooltipDesc: {
-    whiteSpace: 'pre-line',
-    lineHeight: '1.4',
   },
 };
 
