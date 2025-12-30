@@ -39,135 +39,207 @@ const analyzeCode = (code, filename) => {
         wmc: 0,
         maintainabilityIndex: 100,
       },
-      stateAnalysis: {
-        states: [],
-        transitions: [],
-        effects: [],
-        renders: [],
+      // 의존성 분석을 위한 새로운 구조
+      dependencyAnalysis: {
+        components: [],
+        allFunctions: [],
+        dependencies: [],
+        jsxUsages: {},
+        functionCalls: {},
+        importedModules: [],
       }
     };
 
-    let currentComponent = null;
-    const stateSetters = {};
+    let currentFunction = null;
+    const functionDependencies = {};
+    const allDefinedFunctions = new Set();
+    const functionTypes = {}; // 함수 타입 저장 (component, handler, helper)
 
-    const traverse = (node, depth = 0, parentComponent = null) => {
+    const traverse = (node, depth = 0, parentFunction = null) => {
       if (!node || typeof node !== 'object') return;
       
       analysis.complexity.depth = Math.max(analysis.complexity.depth, depth);
 
+      // 함수 선언 감지
       if (node.type === 'FunctionDeclaration' && node.id?.name) {
-        analysis.functions.push(node.id.name);
+        const funcName = node.id.name;
+        analysis.functions.push(funcName);
         analysis.metrics.wmc++;
-        if (/^[A-Z]/.test(node.id.name)) {
-          analysis.components.push(node.id.name);
-          currentComponent = node.id.name;
-          analysis.stateAnalysis.renders.push({
-            component: node.id.name,
-            type: 'FunctionComponent'
-          });
+        allDefinedFunctions.add(funcName);
+        
+        // 함수 타입 분류
+        if (/^[A-Z]/.test(funcName)) {
+          analysis.components.push(funcName);
+          analysis.dependencyAnalysis.components.push(funcName);
+          functionTypes[funcName] = 'component';
+        } else if (/^(handle|on)[A-Z]/.test(funcName)) {
+          analysis.eventHandlers.push(funcName);
+          functionTypes[funcName] = 'handler';
+        } else {
+          functionTypes[funcName] = 'helper';
         }
+        
+        analysis.dependencyAnalysis.allFunctions.push(funcName);
+        
+        if (!functionDependencies[funcName]) {
+          functionDependencies[funcName] = {};
+        }
+        
+        // 이 함수 내부를 순회할 때 현재 함수 컨텍스트 설정
+        const previousFunction = currentFunction;
+        currentFunction = funcName;
+        
+        for (const key in node) {
+          if (key === 'loc' || key === 'range' || key === 'start' || key === 'end' || key === 'id') continue;
+          const child = node[key];
+          if (Array.isArray(child)) {
+            child.forEach(c => traverse(c, depth + 1, funcName));
+          } else if (child && typeof child === 'object') {
+            traverse(child, depth + 1, funcName);
+          }
+        }
+        
+        currentFunction = previousFunction;
+        return;
       }
 
+      // 변수 선언자 (화살표 함수, 함수 표현식)
       if (node.type === 'VariableDeclarator') {
         if (node.init?.type === 'ArrowFunctionExpression' || 
             node.init?.type === 'FunctionExpression') {
           if (node.id?.name) {
-            analysis.functions.push(node.id.name);
+            const funcName = node.id.name;
+            analysis.functions.push(funcName);
             analysis.metrics.wmc++;
-            if (/^[A-Z]/.test(node.id.name)) {
-              analysis.components.push(node.id.name);
-              currentComponent = node.id.name;
-              analysis.stateAnalysis.renders.push({
-                component: node.id.name,
-                type: 'FunctionComponent'
-              });
+            allDefinedFunctions.add(funcName);
+            
+            // 함수 타입 분류
+            if (/^[A-Z]/.test(funcName)) {
+              analysis.components.push(funcName);
+              analysis.dependencyAnalysis.components.push(funcName);
+              functionTypes[funcName] = 'component';
+            } else if (/^(handle|on)[A-Z]/.test(funcName)) {
+              analysis.eventHandlers.push(funcName);
+              functionTypes[funcName] = 'handler';
+            } else {
+              functionTypes[funcName] = 'helper';
             }
-            if (/^(handle|on)[A-Z]/.test(node.id.name)) {
-              analysis.eventHandlers.push(node.id.name);
+            
+            analysis.dependencyAnalysis.allFunctions.push(funcName);
+            
+            if (!functionDependencies[funcName]) {
+              functionDependencies[funcName] = {};
             }
+            
+            // 이 함수 내부를 순회할 때 현재 함수 컨텍스트 설정
+            const previousFunction = currentFunction;
+            currentFunction = funcName;
+            
+            for (const key in node.init) {
+              if (key === 'loc' || key === 'range' || key === 'start' || key === 'end') continue;
+              const child = node.init[key];
+              if (Array.isArray(child)) {
+                child.forEach(c => traverse(c, depth + 1, funcName));
+              } else if (child && typeof child === 'object') {
+                traverse(child, depth + 1, funcName);
+              }
+            }
+            
+            currentFunction = previousFunction;
+            return;
           }
         } else {
           if (node.id?.name) {
             analysis.variables.push(node.id.name);
           }
         }
+      }
 
-        if (node.id?.type === 'ArrayPattern' && 
-            node.init?.callee?.name === 'useState') {
-          const stateName = node.id.elements?.[0]?.name;
-          const setterName = node.id.elements?.[1]?.name;
-          const initialValue = node.init.arguments?.[0];
-          
-          let initialValueStr = 'undefined';
-          if (initialValue) {
-            if (initialValue.type === 'StringLiteral') initialValueStr = `"${initialValue.value}"`;
-            else if (initialValue.type === 'NumericLiteral') initialValueStr = String(initialValue.value);
-            else if (initialValue.type === 'BooleanLiteral') initialValueStr = String(initialValue.value);
-            else if (initialValue.type === 'NullLiteral') initialValueStr = 'null';
-            else if (initialValue.type === 'ArrayExpression') initialValueStr = '[]';
-            else if (initialValue.type === 'ObjectExpression') initialValueStr = '{}';
-            else if (initialValue.type === 'ArrowFunctionExpression') initialValueStr = '() => ...';
+      // JSX 요소 사용 감지 (의존성)
+      if (node.type === 'JSXElement' || node.type === 'JSXOpeningElement') {
+        const elementName = node.type === 'JSXElement' 
+          ? node.openingElement?.name?.name 
+          : node.name?.name;
+        
+        if (elementName && /^[A-Z]/.test(elementName)) {
+          if (currentFunction) {
+            if (!functionDependencies[currentFunction]) {
+              functionDependencies[currentFunction] = {};
+            }
+            functionDependencies[currentFunction][elementName] = 
+              (functionDependencies[currentFunction][elementName] || 0) + 1;
           }
+        }
+      }
 
-          if (stateName) {
-            analysis.stateAnalysis.states.push({
-              name: stateName,
-              setter: setterName,
-              initialValue: initialValueStr,
-              component: currentComponent || 'Unknown',
-            });
-            if (setterName) {
-              stateSetters[setterName] = stateName;
+      // 함수 호출 감지 (모든 함수 호출)
+      if (node.type === 'CallExpression') {
+        let calleeName = null;
+        
+        // 일반 함수 호출: funcName()
+        if (node.callee?.type === 'Identifier') {
+          calleeName = node.callee.name;
+        }
+        // 멤버 표현식: obj.method() - 선택적으로 추적
+        else if (node.callee?.type === 'MemberExpression' && node.callee?.property?.name) {
+          // setState 등은 제외하고 싶으면 여기서 필터링
+        }
+        
+        if (calleeName) {
+          // Hooks 추적
+          if (calleeName.startsWith('use')) {
+            analysis.hooks.push(calleeName);
+          }
+          
+          // 현재 함수에서 다른 함수 호출 추적
+          if (currentFunction && calleeName !== currentFunction) {
+            // 빌트인 함수 제외 (alert, console, setTimeout 등)
+            const builtins = ['alert', 'console', 'setTimeout', 'setInterval', 'clearTimeout', 
+                           'clearInterval', 'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+                           'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
+                           'JSON', 'Math', 'Date', 'Array', 'Object', 'String', 'Number',
+                           'Boolean', 'Symbol', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise',
+                           'fetch', 'require'];
+            
+            // React hooks와 setState는 제외
+            const isHook = calleeName.startsWith('use');
+            const isSetState = calleeName.startsWith('set') && calleeName.length > 3 && 
+                              calleeName[3] === calleeName[3].toUpperCase();
+            
+            if (!builtins.includes(calleeName) && !isHook && !isSetState) {
+              if (!functionDependencies[currentFunction]) {
+                functionDependencies[currentFunction] = {};
+              }
+              functionDependencies[currentFunction][calleeName] = 
+                (functionDependencies[currentFunction][calleeName] || 0) + 1;
             }
           }
         }
       }
 
-      if (node.type === 'CallExpression') {
-        if (node.callee?.name?.startsWith('use')) {
-          analysis.hooks.push(node.callee.name);
-          
-          if (node.callee.name === 'useEffect') {
-            const deps = node.arguments?.[1]?.elements?.map(e => e?.name).filter(Boolean) || [];
-            analysis.stateAnalysis.effects.push({
-              component: currentComponent || 'Unknown',
-              dependencies: deps,
-              type: 'useEffect'
-            });
-          }
-          
-          if (node.callee.name === 'useCallback' || node.callee.name === 'useMemo') {
-            const deps = node.arguments?.[1]?.elements?.map(e => e?.name).filter(Boolean) || [];
-            analysis.stateAnalysis.effects.push({
-              component: currentComponent || 'Unknown',
-              dependencies: deps,
-              type: node.callee.name
-            });
-          }
-        }
-
-        if (node.callee?.name && stateSetters[node.callee.name]) {
-          const stateName = stateSetters[node.callee.name];
-          let trigger = 'direct call';
-          
-          analysis.stateAnalysis.transitions.push({
-            from: stateName,
-            to: stateName,
-            trigger: trigger,
-            setter: node.callee.name,
-            component: currentComponent || 'Unknown',
-          });
-        }
-      }
-
+      // Import 문 분석
       if (node.type === 'ImportDeclaration') {
+        const importSource = node.source?.value;
+        const importedItems = node.specifiers?.map(s => ({
+          name: s.local?.name,
+          imported: s.imported?.name || s.local?.name,
+          type: s.type
+        })).filter(i => i.name) || [];
+        
         analysis.imports.push({
-          source: node.source?.value,
-          specifiers: node.specifiers?.map(s => s.local?.name).filter(Boolean) || []
+          source: importSource,
+          specifiers: importedItems.map(i => i.name)
         });
+        
+        analysis.dependencyAnalysis.importedModules.push({
+          source: importSource,
+          items: importedItems
+        });
+        
         analysis.metrics.cbo++;
       }
 
+      // Export 분석
       if (node.type === 'ExportDefaultDeclaration' || 
           node.type === 'ExportNamedDeclaration') {
         if (node.declaration?.id?.name) {
@@ -175,6 +247,7 @@ const analyzeCode = (code, filename) => {
         }
       }
 
+      // 복잡도 계산
       if (['IfStatement', 'ConditionalExpression', 'SwitchCase', 'CatchClause'].includes(node.type)) {
         analysis.complexity.branches++;
         analysis.metrics.cyclomaticComplexity++;
@@ -189,6 +262,7 @@ const analyzeCode = (code, filename) => {
         analysis.metrics.cyclomaticComplexity++;
       }
 
+      // 보안 이슈 감지
       if (node.type === 'JSXAttribute' && 
           node.name?.name === 'dangerouslySetInnerHTML') {
         analysis.issues.push({
@@ -206,24 +280,49 @@ const analyzeCode = (code, filename) => {
         });
       }
 
+      // 자식 노드 순회
       for (const key in node) {
         if (key === 'loc' || key === 'range' || key === 'start' || key === 'end') continue;
         const child = node[key];
         if (Array.isArray(child)) {
-          child.forEach(c => traverse(c, depth + 1, currentComponent));
+          child.forEach(c => traverse(c, depth + 1, currentFunction));
         } else if (child && typeof child === 'object') {
-          traverse(child, depth + 1, currentComponent);
+          traverse(child, depth + 1, currentFunction);
         }
       }
     };
 
     traverse(ast.program);
 
+    // 중복 제거
     analysis.hooks = [...new Set(analysis.hooks)];
     analysis.components = [...new Set(analysis.components)];
+    analysis.dependencyAnalysis.components = [...new Set(analysis.dependencyAnalysis.components)];
+    analysis.dependencyAnalysis.allFunctions = [...new Set(analysis.dependencyAnalysis.allFunctions)];
     analysis.functions = [...new Set(analysis.functions)];
     analysis.variables = [...new Set(analysis.variables)];
 
+    // 의존성 배열 생성 (정의된 함수에 대한 호출만 포함)
+    const dependencies = [];
+    Object.entries(functionDependencies).forEach(([from, targets]) => {
+      Object.entries(targets).forEach(([to, count]) => {
+        // 정의된 함수이거나 컴포넌트인 경우만 포함
+        if (allDefinedFunctions.has(to) || /^[A-Z]/.test(to)) {
+          dependencies.push({ 
+            from, 
+            to, 
+            count,
+            fromType: functionTypes[from] || 'unknown',
+            toType: functionTypes[to] || (/^[A-Z]/.test(to) ? 'component' : 'external')
+          });
+        }
+      });
+    });
+    
+    analysis.dependencyAnalysis.dependencies = dependencies;
+    analysis.dependencyAnalysis.functionTypes = functionTypes;
+
+    // 유지보수 지수 계산
     const V = analysis.loc;
     const CC = analysis.metrics.cyclomaticComplexity;
     const LOC = analysis.loc;
@@ -473,522 +572,439 @@ const CustomAxisTick = ({ payload, x, y, cx, cy }) => {
   );
 };
 
-const StateDiagram = ({ stateAnalysis, components }) => {
+// ============================================
+// 함수 의존성 다이어그램 (모든 함수 포함)
+// ============================================
+const DependencyDiagram = ({ dependencyAnalysis }) => {
   const [hoveredNode, setHoveredNode] = useState(null);
+  const [hoveredEdge, setHoveredEdge] = useState(null);
   
-  const { states, transitions, effects } = stateAnalysis;
+  const { allFunctions, dependencies, functionTypes } = dependencyAnalysis;
   
-  const nodeWidth = 140;
-  const nodeHeight = 50;
-  const padding = 40;
-  
-  const diagramNodes = [];
-  const diagramEdges = [];
-  
-  diagramNodes.push({
-    id: 'start',
-    type: 'start',
-    label: '시작',
-    x: padding,
-    y: 150,
-    description: '컴포넌트가 마운트되기 전 초기 상태입니다.'
+  // 모든 함수 수집 (의존성에서 참조되는 것 포함)
+  const allNodes = new Set(allFunctions || []);
+  dependencies.forEach(dep => {
+    allNodes.add(dep.from);
+    allNodes.add(dep.to);
   });
   
-  diagramNodes.push({
-    id: 'mount',
-    type: 'lifecycle',
-    label: '컴포넌트 마운트',
-    x: padding + 100,
-    y: 150,
-    description: '컴포넌트가 DOM에 삽입되는 단계입니다. useEffect의 setup 함수가 실행됩니다.'
-  });
+  const nodeList = Array.from(allNodes);
   
-  diagramEdges.push({
-    from: 'start',
-    to: 'mount',
-    label: '초기화'
-  });
-  
-  const groupedStates = {};
-  states.forEach(state => {
-    if (!groupedStates[state.component]) {
-      groupedStates[state.component] = [];
-    }
-    groupedStates[state.component].push(state);
-  });
-  
-  let yOffset = 60;
-  let stateIndex = 0;
-  
-  Object.entries(groupedStates).forEach(([component, componentStates], groupIndex) => {
-    const groupStartX = padding + 280;
-    const groupWidth = Math.max(300, componentStates.length * 180);
-    
-    diagramNodes.push({
-      id: `group-${component}`,
-      type: 'group',
-      label: component,
-      x: groupStartX - 20,
-      y: yOffset - 30,
-      width: groupWidth,
-      height: componentStates.length > 2 ? 200 : 150,
-      description: `${component} 컴포넌트의 상태 관리 영역입니다.`
-    });
-    
-    componentStates.forEach((state, idx) => {
-      const xPos = groupStartX + (idx % 2) * 160;
-      const yPos = yOffset + Math.floor(idx / 2) * 80 + 20;
-      
-      diagramNodes.push({
-        id: `state-${state.name}`,
-        type: 'state',
-        label: state.name,
-        sublabel: `초기값: ${state.initialValue}`,
-        x: xPos,
-        y: yPos,
-        setter: state.setter,
-        description: `useState로 관리되는 상태입니다.\n• 상태명: ${state.name}\n• setter: ${state.setter}\n• 초기값: ${state.initialValue}`
-      });
-      
-      if (idx === 0) {
-        diagramEdges.push({
-          from: 'mount',
-          to: `state-${state.name}`,
-          label: '상태 초기화'
-        });
-      }
-      
-      stateIndex++;
-    });
-    
-    yOffset += componentStates.length > 2 ? 220 : 170;
-  });
-  
-  transitions.forEach((transition, idx) => {
-    const existingEdge = diagramEdges.find(
-      e => e.from === `state-${transition.from}` && e.to === `state-${transition.to}` && e.isSelfLoop
+  if (nodeList.length === 0) {
+    return (
+      <div style={styles.emptyDiagram}>
+        <p>📭 분석된 함수가 없습니다.</p>
+        <p style={{ fontSize: '13px', color: '#9ca3af' }}>
+          JavaScript/React 코드를 분석하면 함수 의존성 다이어그램이 생성됩니다.
+        </p>
+      </div>
     );
-    
-    if (!existingEdge) {
-      diagramEdges.push({
-        from: `state-${transition.from}`,
-        to: `state-${transition.to}`,
-        label: transition.setter,
-        isSelfLoop: transition.from === transition.to,
-        description: `${transition.setter}() 호출로 상태가 업데이트됩니다.`
-      });
-    }
-  });
-  
-  effects.forEach((effect, idx) => {
-    if (effect.dependencies.length > 0) {
-      effect.dependencies.forEach(dep => {
-        const stateNode = diagramNodes.find(n => n.id === `state-${dep}`);
-        if (stateNode) {
-          diagramEdges.push({
-            from: `state-${dep}`,
-            to: `effect-${idx}`,
-            label: '의존성',
-            isEffect: true
-          });
-        }
-      });
-      
-      diagramNodes.push({
-        id: `effect-${idx}`,
-        type: 'effect',
-        label: effect.type,
-        x: padding + 600,
-        y: 80 + idx * 70,
-        description: `${effect.type} 훅입니다.\n의존성: [${effect.dependencies.join(', ')}]\n의존성 배열의 값이 변경될 때 실행됩니다.`
-      });
-    }
-  });
-  
-  const renderActions = [];
-  states.forEach(state => {
-    renderActions.push({
-      stateName: state.name,
-      action: '리렌더링 트리거'
-    });
-  });
-  
-  if (renderActions.length > 0) {
-    diagramNodes.push({
-      id: 'render',
-      type: 'lifecycle',
-      label: '리렌더링',
-      x: padding + 600,
-      y: 280,
-      description: '상태가 변경되면 컴포넌트가 리렌더링됩니다.\nReact는 Virtual DOM을 비교하여 실제 DOM을 효율적으로 업데이트합니다.'
-    });
-    
-    states.forEach(state => {
-      diagramEdges.push({
-        from: `state-${state.name}`,
-        to: 'render',
-        label: '상태 변경',
-        isDashed: true
-      });
-    });
   }
-  
-  diagramNodes.push({
-    id: 'unmount',
-    type: 'end',
-    label: '언마운트',
-    x: padding + 750,
-    y: 150,
-    description: '컴포넌트가 DOM에서 제거되는 단계입니다.\nuseEffect의 cleanup 함수가 실행됩니다.'
+
+  // 각 노드의 연결 수 계산 (중심성)
+  const nodeConnections = {};
+  nodeList.forEach(node => {
+    nodeConnections[node] = { in: 0, out: 0, total: 0 };
   });
   
-  diagramEdges.push({
-    from: 'render',
-    to: 'unmount',
-    label: '컴포넌트 제거',
-    isDashed: true
-  });
-
-  const svgWidth = 900;
-  const svgHeight = Math.max(400, yOffset + 100);
-
-  const getNodeCenter = (node) => {
-    if (node.type === 'start' || node.type === 'end') {
-      return { x: node.x + 15, y: node.y + 15 };
+  dependencies.forEach(dep => {
+    if (nodeConnections[dep.from]) {
+      nodeConnections[dep.from].out += dep.count;
+      nodeConnections[dep.from].total += dep.count;
     }
-    return { x: node.x + nodeWidth / 2, y: node.y + nodeHeight / 2 };
+    if (nodeConnections[dep.to]) {
+      nodeConnections[dep.to].in += dep.count;
+      nodeConnections[dep.to].total += dep.count;
+    }
+  });
+
+  // 노드 위치 계산
+  const svgWidth = 850;
+  const svgHeight = Math.max(500, nodeList.length * 70);
+  const centerX = svgWidth / 2;
+  const centerY = svgHeight / 2;
+  
+  // 연결이 많은 노드를 중앙에 배치
+  const sortedNodes = [...nodeList].sort((a, b) => 
+    nodeConnections[b].total - nodeConnections[a].total
+  );
+  
+  const nodePositions = {};
+  const nodeWidth = 130;
+  const nodeHeight = 44;
+  
+  // 원형 레이아웃 + 중심성 기반 배치
+  sortedNodes.forEach((node, index) => {
+    if (index === 0 && sortedNodes.length > 1) {
+      // 가장 연결이 많은 노드는 중앙에
+      nodePositions[node] = { x: centerX, y: centerY };
+    } else if (sortedNodes.length === 1) {
+      // 노드가 1개면 중앙에
+      nodePositions[node] = { x: centerX, y: centerY };
+    } else {
+      // 나머지는 원형으로 배치
+      const adjustedIndex = index - 1;
+      const layer = Math.floor(adjustedIndex / 6) + 1;
+      const posInLayer = adjustedIndex % 6;
+      const nodesInThisLayer = Math.min(6, sortedNodes.length - 1 - (layer - 1) * 6);
+      const angle = (posInLayer / nodesInThisLayer) * 2 * Math.PI - Math.PI / 2;
+      const radius = 140 + layer * 110;
+      
+      nodePositions[node] = {
+        x: centerX + radius * Math.cos(angle),
+        y: centerY + radius * Math.sin(angle)
+      };
+    }
+  });
+
+  // 함수 타입에 따른 노드 스타일
+  const getNodeStyle = (node) => {
+    const type = functionTypes?.[node] || (/^[A-Z]/.test(node) ? 'component' : 'helper');
+    
+    switch(type) {
+      case 'component':
+        return { 
+          fill: '#dbeafe', 
+          stroke: '#3b82f6', 
+          text: '#1e40af',
+          icon: '⚛️',
+          label: 'Component'
+        };
+      case 'handler':
+        return { 
+          fill: '#fef3c7', 
+          stroke: '#f59e0b', 
+          text: '#92400e',
+          icon: '🎯',
+          label: 'Handler'
+        };
+      case 'helper':
+        return { 
+          fill: '#dcfce7', 
+          stroke: '#22c55e', 
+          text: '#166534',
+          icon: '🔧',
+          label: 'Helper'
+        };
+      default:
+        return { 
+          fill: '#f3f4f6', 
+          stroke: '#9ca3af', 
+          text: '#374151',
+          icon: '📦',
+          label: 'External'
+        };
+    }
   };
 
-  const renderEdge = (edge, idx) => {
-    const fromNode = diagramNodes.find(n => n.id === edge.from);
-    const toNode = diagramNodes.find(n => n.id === edge.to);
+  // 노드 크기 (연결 수에 따라)
+  const getNodeSize = (node) => {
+    const connections = nodeConnections[node]?.total || 0;
+    const baseWidth = 130;
+    const baseHeight = 44;
+    const scale = Math.min(1.4, 1 + connections * 0.08);
+    return { width: baseWidth * scale, height: baseHeight * scale };
+  };
+
+  // 화살표 경로 계산
+  const getEdgePath = (from, to) => {
+    const fromPos = nodePositions[from];
+    const toPos = nodePositions[to];
     
-    if (!fromNode || !toNode) return null;
+    if (!fromPos || !toPos) return null;
     
-    const from = getNodeCenter(fromNode);
-    const to = getNodeCenter(toNode);
+    const fromSize = getNodeSize(from);
+    const toSize = getNodeSize(to);
     
-    if (edge.isSelfLoop) {
-      const loopPath = `M ${from.x + 40} ${from.y - 20} 
-                        C ${from.x + 80} ${from.y - 60} 
-                          ${from.x + 80} ${from.y + 60} 
-                          ${from.x + 40} ${from.y + 20}`;
-      return (
-        <g key={idx}>
-          <path
-            d={loopPath}
-            fill="none"
-            stroke="#6366f1"
-            strokeWidth="2"
-            markerEnd="url(#arrowhead)"
-          />
-          <text
-            x={from.x + 90}
-            y={from.y}
-            fontSize="10"
-            fill="#6366f1"
-            textAnchor="start"
-          >
-            {edge.label}
-          </text>
-        </g>
-      );
-    }
+    // 방향 벡터
+    const dx = toPos.x - fromPos.x;
+    const dy = toPos.y - fromPos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
     
-    const midX = (from.x + to.x) / 2;
-    const midY = (from.y + to.y) / 2;
+    if (dist === 0) return null;
+    
+    const nx = dx / dist;
+    const ny = dy / dist;
+    
+    // 시작점과 끝점 (노드 테두리)
+    const startX = fromPos.x + nx * (fromSize.width / 2 + 5);
+    const startY = fromPos.y + ny * (fromSize.height / 2 + 5);
+    const endX = toPos.x - nx * (toSize.width / 2 + 15);
+    const endY = toPos.y - ny * (toSize.height / 2 + 15);
+    
+    // 곡선 제어점
+    const midX = (startX + endX) / 2;
+    const midY = (startY + endY) / 2;
+    
+    // 약간의 곡선 추가
+    const perpX = -ny * 30;
+    const perpY = nx * 30;
+    
+    return {
+      path: `M ${startX} ${startY} Q ${midX + perpX} ${midY + perpY} ${endX} ${endY}`,
+      labelX: midX + perpX * 0.6,
+      labelY: midY + perpY * 0.6,
+      startX, startY, endX, endY
+    };
+  };
+
+  // 자기 참조 경로
+  const getSelfLoopPath = (node) => {
+    const pos = nodePositions[node];
+    const size = getNodeSize(node);
+    
+    if (!pos) return null;
+    
+    const x = pos.x + size.width / 2;
+    const y = pos.y - size.height / 2;
+    
+    return {
+      path: `M ${x} ${y} C ${x + 60} ${y - 50} ${x + 60} ${y + 50} ${x} ${y + size.height}`,
+      labelX: x + 65,
+      labelY: y + 10
+    };
+  };
+
+  const renderEdge = (dep, idx) => {
+    const isSelfLoop = dep.from === dep.to;
+    const edgeData = isSelfLoop 
+      ? getSelfLoopPath(dep.from)
+      : getEdgePath(dep.from, dep.to);
+    
+    if (!edgeData) return null;
+    
+    const isHovered = hoveredEdge === idx;
+    const strokeWidth = Math.min(4, 1.5 + dep.count * 0.5);
     
     return (
-      <g key={idx}>
-        <line
-          x1={from.x}
-          y1={from.y}
-          x2={to.x}
-          y2={to.y}
-          stroke={edge.isEffect ? '#22c55e' : edge.isDashed ? '#9ca3af' : '#6366f1'}
-          strokeWidth="2"
-          strokeDasharray={edge.isDashed ? '5,5' : 'none'}
-          markerEnd="url(#arrowhead)"
+      <g 
+        key={idx}
+        onMouseEnter={() => setHoveredEdge(idx)}
+        onMouseLeave={() => setHoveredEdge(null)}
+        style={{ cursor: 'pointer' }}
+      >
+        <path
+          d={edgeData.path}
+          fill="none"
+          stroke={isHovered ? '#6366f1' : '#94a3b8'}
+          strokeWidth={isHovered ? strokeWidth + 1.5 : strokeWidth}
+          markerEnd="url(#dependency-arrow)"
+          style={{ transition: 'all 0.2s ease' }}
         />
-        {edge.label && (
+        {/* 의존 횟수 표시 */}
+        <g transform={`translate(${edgeData.labelX}, ${edgeData.labelY})`}>
+          <circle
+            r="14"
+            fill={isHovered ? '#6366f1' : '#ffffff'}
+            stroke={isHovered ? '#4f46e5' : '#94a3b8'}
+            strokeWidth="2"
+          />
           <text
-            x={midX}
-            y={midY - 8}
-            fontSize="10"
-            fill="#6b7280"
             textAnchor="middle"
-            style={{ background: '#ffffff' }}
+            dominantBaseline="middle"
+            fontSize="11"
+            fontWeight="700"
+            fill={isHovered ? '#ffffff' : '#475569'}
           >
-            {edge.label}
+            {dep.count}
           </text>
+        </g>
+        {/* 호버 툴팁 */}
+        {isHovered && (
+          <foreignObject 
+            x={edgeData.labelX + 25} 
+            y={edgeData.labelY - 20} 
+            width="200" 
+            height="60"
+          >
+            <div style={styles.diagramTooltip}>
+              <strong>{dep.from}</strong> → <strong>{dep.to}</strong>
+              <br />
+              호출 횟수: {dep.count}회
+            </div>
+          </foreignObject>
         )}
       </g>
     );
   };
 
   const renderNode = (node) => {
-    const isHovered = hoveredNode === node.id;
+    const pos = nodePositions[node];
+    const size = getNodeSize(node);
+    const style = getNodeStyle(node);
+    const conn = nodeConnections[node];
+    const isHovered = hoveredNode === node;
     
-    if (node.type === 'start') {
-      return (
-        <g 
-          key={node.id}
-          onMouseEnter={() => setHoveredNode(node.id)}
-          onMouseLeave={() => setHoveredNode(null)}
-          style={{ cursor: 'pointer' }}
-        >
-          <circle
-            cx={node.x + 15}
-            cy={node.y + 15}
-            r="15"
-            fill="#1f2937"
-          />
-          {isHovered && (
-            <foreignObject x={node.x - 50} y={node.y + 40} width="150" height="60">
-              <div style={styles.diagramTooltip}>{node.description}</div>
-            </foreignObject>
-          )}
-        </g>
-      );
-    }
+    if (!pos) return null;
     
-    if (node.type === 'end') {
-      return (
-        <g 
-          key={node.id}
-          onMouseEnter={() => setHoveredNode(node.id)}
-          onMouseLeave={() => setHoveredNode(null)}
-          style={{ cursor: 'pointer' }}
-        >
-          <circle
-            cx={node.x + 15}
-            cy={node.y + 15}
-            r="15"
-            fill="none"
-            stroke="#1f2937"
-            strokeWidth="3"
-          />
-          <circle
-            cx={node.x + 15}
-            cy={node.y + 15}
-            r="10"
-            fill="#1f2937"
-          />
-          <text
-            x={node.x + 15}
-            y={node.y + 45}
-            fontSize="11"
-            fill="#374151"
-            textAnchor="middle"
-          >
-            {node.label}
-          </text>
-          {isHovered && (
-            <foreignObject x={node.x - 50} y={node.y + 55} width="150" height="80">
-              <div style={styles.diagramTooltip}>{node.description}</div>
-            </foreignObject>
-          )}
-        </g>
-      );
-    }
-    
-    if (node.type === 'group') {
-      return (
-        <g key={node.id}>
-          <rect
-            x={node.x}
-            y={node.y}
-            width={node.width}
-            height={node.height}
-            fill="#f8fafc"
-            stroke="#e5e7eb"
-            strokeWidth="1"
-            rx="8"
-          />
-          <text
-            x={node.x + 10}
-            y={node.y + 20}
-            fontSize="12"
-            fill="#6b7280"
-            fontWeight="600"
-          >
-            {node.label}
-          </text>
-        </g>
-      );
-    }
-    
-    if (node.type === 'state') {
-      return (
-        <g 
-          key={node.id}
-          onMouseEnter={() => setHoveredNode(node.id)}
-          onMouseLeave={() => setHoveredNode(null)}
-          style={{ cursor: 'pointer' }}
-        >
-          <rect
-            x={node.x}
-            y={node.y}
-            width={nodeWidth}
-            height={nodeHeight}
-            fill={isHovered ? '#dbeafe' : '#3b82f6'}
-            stroke={isHovered ? '#3b82f6' : '#2563eb'}
-            strokeWidth="2"
-            rx="8"
-          />
-          <text
-            x={node.x + nodeWidth / 2}
-            y={node.y + 20}
-            fontSize="12"
-            fill={isHovered ? '#1e40af' : '#ffffff'}
-            textAnchor="middle"
-            fontWeight="600"
-          >
-            {node.label}
-          </text>
-          <text
-            x={node.x + nodeWidth / 2}
-            y={node.y + 38}
-            fontSize="10"
-            fill={isHovered ? '#3b82f6' : '#bfdbfe'}
-            textAnchor="middle"
-          >
-            {node.sublabel}
-          </text>
-          {isHovered && (
-            <foreignObject x={node.x} y={node.y + nodeHeight + 10} width="180" height="100">
-              <div style={styles.diagramTooltip}>{node.description}</div>
-            </foreignObject>
-          )}
-        </g>
-      );
-    }
-    
-    if (node.type === 'lifecycle') {
-      return (
-        <g 
-          key={node.id}
-          onMouseEnter={() => setHoveredNode(node.id)}
-          onMouseLeave={() => setHoveredNode(null)}
-          style={{ cursor: 'pointer' }}
-        >
-          <rect
-            x={node.x}
-            y={node.y}
-            width={nodeWidth}
-            height={nodeHeight}
-            fill={isHovered ? '#fef3c7' : '#fbbf24'}
-            stroke={isHovered ? '#f59e0b' : '#d97706'}
-            strokeWidth="2"
-            rx="8"
-          />
-          <text
-            x={node.x + nodeWidth / 2}
-            y={node.y + nodeHeight / 2 + 4}
-            fontSize="12"
-            fill={isHovered ? '#92400e' : '#ffffff'}
-            textAnchor="middle"
-            fontWeight="600"
-          >
-            {node.label}
-          </text>
-          {isHovered && (
-            <foreignObject x={node.x - 20} y={node.y + nodeHeight + 10} width="200" height="100">
-              <div style={styles.diagramTooltip}>{node.description}</div>
-            </foreignObject>
-          )}
-        </g>
-      );
-    }
-    
-    if (node.type === 'effect') {
-      return (
-        <g 
-          key={node.id}
-          onMouseEnter={() => setHoveredNode(node.id)}
-          onMouseLeave={() => setHoveredNode(null)}
-          style={{ cursor: 'pointer' }}
-        >
-          <rect
-            x={node.x}
-            y={node.y}
-            width={nodeWidth - 20}
-            height={nodeHeight - 10}
-            fill={isHovered ? '#dcfce7' : '#22c55e'}
-            stroke={isHovered ? '#22c55e' : '#16a34a'}
-            strokeWidth="2"
-            rx="8"
-          />
-          <text
-            x={node.x + (nodeWidth - 20) / 2}
-            y={node.y + (nodeHeight - 10) / 2 + 4}
-            fontSize="11"
-            fill={isHovered ? '#166534' : '#ffffff'}
-            textAnchor="middle"
-            fontWeight="600"
-          >
-            {node.label}
-          </text>
-          {isHovered && (
-            <foreignObject x={node.x - 20} y={node.y + nodeHeight} width="180" height="80">
-              <div style={styles.diagramTooltip}>{node.description}</div>
-            </foreignObject>
-          )}
-        </g>
-      );
-    }
-    
-    return null;
-  };
-
-  if (states.length === 0) {
     return (
-      <div style={styles.emptyDiagram}>
-        <p>📭 분석된 상태(useState)가 없습니다.</p>
-        <p style={{ fontSize: '13px', color: '#9ca3af' }}>
-          useState를 사용하는 React 컴포넌트를 분석하면 상태 다이어그램이 생성됩니다.
-        </p>
-      </div>
+      <g 
+        key={node}
+        onMouseEnter={() => setHoveredNode(node)}
+        onMouseLeave={() => setHoveredNode(null)}
+        style={{ cursor: 'pointer' }}
+        transform={`translate(${pos.x}, ${pos.y})`}
+      >
+        {/* 노드 그림자 */}
+        <rect
+          x={-size.width / 2 + 3}
+          y={-size.height / 2 + 3}
+          width={size.width}
+          height={size.height}
+          rx="10"
+          fill="rgba(0,0,0,0.1)"
+        />
+        {/* 노드 배경 */}
+        <rect
+          x={-size.width / 2}
+          y={-size.height / 2}
+          width={size.width}
+          height={size.height}
+          rx="10"
+          fill={isHovered ? style.stroke : style.fill}
+          stroke={style.stroke}
+          strokeWidth={isHovered ? 3 : 2}
+          style={{ transition: 'all 0.2s ease' }}
+        />
+        {/* 아이콘 */}
+        <text
+          x={-size.width / 2 + 12}
+          y={2}
+          fontSize="14"
+          dominantBaseline="middle"
+        >
+          {style.icon}
+        </text>
+        {/* 함수 이름 */}
+        <text
+          x={5}
+          y={0}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          fontSize="12"
+          fontWeight="600"
+          fill={isHovered ? '#ffffff' : style.text}
+        >
+          {node.length > 14 ? node.slice(0, 12) + '...' : node}
+        </text>
+        {/* 타입 라벨 */}
+        <text
+          x={5}
+          y={size.height / 2 - 10}
+          textAnchor="middle"
+          fontSize="9"
+          fill={isHovered ? 'rgba(255,255,255,0.8)' : style.stroke}
+        >
+          {style.label}
+        </text>
+        {/* 연결 수 뱃지 */}
+        {conn && conn.total > 0 && (
+          <g transform={`translate(${size.width / 2 - 8}, ${-size.height / 2 - 8})`}>
+            <circle r="12" fill="#ef4444" stroke="#ffffff" strokeWidth="2" />
+            <text
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fontSize="10"
+              fontWeight="bold"
+              fill="#ffffff"
+            >
+              {conn.total}
+            </text>
+          </g>
+        )}
+        {/* 호버 툴팁 */}
+        {isHovered && (
+          <foreignObject 
+            x={size.width / 2 + 15} 
+            y={-40} 
+            width="180" 
+            height="100"
+          >
+            <div style={styles.diagramTooltip}>
+              <strong>{node}</strong>
+              <br />
+              타입: {style.label}
+              <br />
+              호출됨 (In): {conn?.in || 0}회
+              <br />
+              호출함 (Out): {conn?.out || 0}회
+            </div>
+          </foreignObject>
+        )}
+      </g>
     );
-  }
+  };
 
   return (
     <div style={styles.diagramContainer}>
       <svg width={svgWidth} height={svgHeight} style={{ overflow: 'visible' }}>
         <defs>
           <marker
-            id="arrowhead"
+            id="dependency-arrow"
             markerWidth="10"
             markerHeight="7"
             refX="9"
             refY="3.5"
             orient="auto"
           >
-            <polygon points="0 0, 10 3.5, 0 7" fill="#6366f1" />
+            <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
           </marker>
         </defs>
         
-        {diagramNodes.filter(n => n.type === 'group').map(renderNode)}
-        {diagramEdges.map(renderEdge)}
-        {diagramNodes.filter(n => n.type !== 'group').map(renderNode)}
+        {/* 엣지 먼저 렌더링 */}
+        {dependencies.map(renderEdge)}
+        
+        {/* 노드 렌더링 */}
+        {nodeList.map(renderNode)}
       </svg>
       
+      {/* 범례 */}
       <div style={styles.diagramLegend}>
         <div style={styles.legendItem}>
-          <div style={{ ...styles.legendDot, background: '#1f2937' }}></div>
-          <span>시작/종료</span>
+          <div style={{ ...styles.legendBox, background: '#dbeafe', border: '2px solid #3b82f6' }}></div>
+          <span>⚛️ Component (컴포넌트)</span>
         </div>
         <div style={styles.legendItem}>
-          <div style={{ ...styles.legendDot, background: '#3b82f6' }}></div>
-          <span>상태 (useState)</span>
+          <div style={{ ...styles.legendBox, background: '#fef3c7', border: '2px solid #f59e0b' }}></div>
+          <span>🎯 Handler (이벤트 핸들러)</span>
         </div>
         <div style={styles.legendItem}>
-          <div style={{ ...styles.legendDot, background: '#fbbf24' }}></div>
-          <span>라이프사이클</span>
+          <div style={{ ...styles.legendBox, background: '#dcfce7', border: '2px solid #22c55e' }}></div>
+          <span>🔧 Helper (헬퍼 함수)</span>
         </div>
         <div style={styles.legendItem}>
-          <div style={{ ...styles.legendDot, background: '#22c55e' }}></div>
-          <span>Effect (useEffect)</span>
+          <div style={{ ...styles.legendCircle, background: '#ef4444' }}></div>
+          <span>총 연결 수</span>
+        </div>
+      </div>
+      
+      {/* 통계 요약 */}
+      <div style={styles.dependencyStats}>
+        <div style={styles.statItem}>
+          <span style={styles.statValue}>{nodeList.length}</span>
+          <span style={styles.statLabel}>전체 함수</span>
+        </div>
+        <div style={styles.statItem}>
+          <span style={styles.statValue}>
+            {nodeList.filter(n => (functionTypes?.[n] || (/^[A-Z]/.test(n) ? 'component' : '')) === 'component').length}
+          </span>
+          <span style={styles.statLabel}>컴포넌트</span>
+        </div>
+        <div style={styles.statItem}>
+          <span style={styles.statValue}>{dependencies.length}</span>
+          <span style={styles.statLabel}>의존 관계</span>
+        </div>
+        <div style={styles.statItem}>
+          <span style={styles.statValue}>
+            {dependencies.reduce((sum, d) => sum + d.count, 0)}
+          </span>
+          <span style={styles.statLabel}>총 호출 횟수</span>
+        </div>
+        <div style={styles.statItem}>
+          <span style={{...styles.statValue, fontSize: '16px'}}>
+            {sortedNodes[0] || '-'}
+          </span>
+          <span style={styles.statLabel}>중심 함수</span>
         </div>
       </div>
     </div>
@@ -1069,21 +1085,43 @@ const App = () => {
 
     const validResults = analysisResults.filter(r => !r.error);
     
-    const combinedStateAnalysis = {
-      states: [],
-      transitions: [],
-      effects: [],
-      renders: [],
+    // 의존성 분석 결과 통합
+    const combinedDependencyAnalysis = {
+      allFunctions: [],
+      components: [],
+      dependencies: [],
+      functionTypes: {},
     };
     
+    const allFunctionsSet = new Set();
+    const dependencyMap = {};
+    const mergedFunctionTypes = {};
+    
     validResults.forEach(r => {
-      if (r.stateAnalysis) {
-        combinedStateAnalysis.states.push(...r.stateAnalysis.states);
-        combinedStateAnalysis.transitions.push(...r.stateAnalysis.transitions);
-        combinedStateAnalysis.effects.push(...r.stateAnalysis.effects);
-        combinedStateAnalysis.renders.push(...r.stateAnalysis.renders);
+      if (r.dependencyAnalysis) {
+        (r.dependencyAnalysis.allFunctions || []).forEach(f => allFunctionsSet.add(f));
+        (r.dependencyAnalysis.components || []).forEach(c => combinedDependencyAnalysis.components.push(c));
+        
+        // 함수 타입 병합
+        if (r.dependencyAnalysis.functionTypes) {
+          Object.assign(mergedFunctionTypes, r.dependencyAnalysis.functionTypes);
+        }
+        
+        r.dependencyAnalysis.dependencies.forEach(dep => {
+          const key = `${dep.from}->${dep.to}`;
+          if (dependencyMap[key]) {
+            dependencyMap[key].count += dep.count;
+          } else {
+            dependencyMap[key] = { ...dep };
+          }
+        });
       }
     });
+    
+    combinedDependencyAnalysis.allFunctions = Array.from(allFunctionsSet);
+    combinedDependencyAnalysis.dependencies = Object.values(dependencyMap);
+    combinedDependencyAnalysis.functionTypes = mergedFunctionTypes;
+    combinedDependencyAnalysis.components = [...new Set(combinedDependencyAnalysis.components)];
     
     const summary = {
       totalFiles: analysisResults.length,
@@ -1107,7 +1145,7 @@ const App = () => {
       totalCBO: validResults.reduce((sum, r) => sum + (r.metrics?.cbo || 0), 0),
       totalWMC: validResults.reduce((sum, r) => sum + (r.metrics?.wmc || 0), 0),
       totalAnalysisTime: validResults.reduce((sum, r) => sum + parseFloat(r.analysisTime || 0), 0).toFixed(2),
-      stateAnalysis: combinedStateAnalysis,
+      dependencyAnalysis: combinedDependencyAnalysis,
     };
 
     setResults({ files: analysisResults, summary });
@@ -1361,14 +1399,17 @@ const App = () => {
           </div>
         </div>
 
+        {/* 함수 의존성 다이어그램 */}
         <div style={styles.stateDiagramCard}>
           <h3 style={styles.chartTitle}>
-            <span style={styles.chartIcon}>🔄</span> 상태 다이어그램 (State Diagram)
+            <span style={styles.chartIcon}>🔗</span> 상태 다이어그램 (State Diagram)
           </h3>
-          <p style={styles.chartHint}>* 각 노드에 마우스를 올려 상세 설명을 확인하세요. 상태(useState)의 흐름과 라이프사이클을 시각화합니다.</p>
-          <StateDiagram 
-            stateAnalysis={results.summary.stateAnalysis} 
-            components={results.summary.totalComponents}
+          <p style={styles.chartHint}>
+            * 각 노드와 화살표에 마우스를 올려 상세 정보를 확인하세요. 
+            화살표는 A → B (A가 B를 호출)를 의미하며, 숫자는 호출 횟수입니다.
+          </p>
+          <DependencyDiagram 
+            dependencyAnalysis={results.summary.dependencyAnalysis} 
           />
         </div>
 
@@ -1887,6 +1928,16 @@ const styles = {
     height: '14px',
     borderRadius: '4px',
   },
+  legendBox: {
+    width: '20px',
+    height: '14px',
+    borderRadius: '4px',
+  },
+  legendCircle: {
+    width: '14px',
+    height: '14px',
+    borderRadius: '50%',
+  },
   diagramTooltip: {
     background: '#1f2937',
     color: '#ffffff',
@@ -1900,6 +1951,30 @@ const styles = {
   emptyDiagram: {
     textAlign: 'center',
     padding: '40px',
+    color: '#6b7280',
+  },
+  dependencyStats: {
+    display: 'flex',
+    gap: '32px',
+    marginTop: '20px',
+    paddingTop: '16px',
+    borderTop: '1px solid #e5e7eb',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  statItem: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+  },
+  statValue: {
+    fontSize: '24px',
+    fontWeight: '700',
+    color: '#6366f1',
+  },
+  statLabel: {
+    fontSize: '12px',
     color: '#6b7280',
   },
   filesSection: {
