@@ -1194,7 +1194,7 @@ const App = () => {
       <div style={styles.containerUpload}>
         <div style={styles.header}>
           <div style={styles.logo}>
-            <span style={styles.logoIcon}>⚛️</span>
+            <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/react/react-original.svg" alt="React" style={styles.logoIcon} />
             <h1 style={styles.logoText}>React Code Analyzer</h1>
           </div>
           <p style={styles.subtitle}>React 코드를 분석하여 구조, 복잡도, 보안 이슈를 파악합니다</p>
@@ -1237,10 +1237,21 @@ const App = () => {
           </p>
           
           <div style={styles.uploadBadges}>
-            <span style={styles.badge}>📦 ZIP</span>
-            <span style={styles.badge}>⚛️ JSX</span>
-            <span style={styles.badge}>📘 TSX</span>
-            <span style={styles.badge}>📄 JS/TS</span>
+            <span style={styles.badge}>
+              📦 ZIP
+            </span>
+            <span style={styles.badge}>
+              <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/react/react-original.svg" alt="JSX" style={styles.badgeIcon} />
+              JSX
+            </span>
+            <span style={styles.badge}>
+              <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/typescript/typescript-original.svg" alt="TSX" style={styles.badgeIcon} />
+              TSX
+            </span>
+            <span style={styles.badge}>
+              <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/javascript/javascript-original.svg" alt="JS/TS" style={styles.badgeIcon} />
+              JS/TS
+            </span>
           </div>
         </div>
       </div>
@@ -1517,7 +1528,8 @@ const styles = {
     marginBottom: '12px',
   },
   logoIcon: {
-    fontSize: '36px',
+    width: '36px',
+    height: '36px',
   },
   logoText: {
     fontSize: '28px',
@@ -1583,6 +1595,13 @@ const styles = {
     borderRadius: '20px',
     fontSize: '13px',
     color: '#4b5563',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  badgeIcon: {
+    width: '18px',
+    height: '18px',
   },
   analyzingBox: {
     width: '100%',
