@@ -521,7 +521,7 @@ const analyzeCode = (code, filename) => {
 
 const calculateQualityScore = (analysis) => {
   if (analysis.error) return 0;
-  
+
   let score = 100;
   score -= Math.min(30, analysis.metrics.cyclomaticComplexity * 2);
   score -= Math.min(15, analysis.complexity.depth);
@@ -531,8 +531,220 @@ const calculateQualityScore = (analysis) => {
   if (analysis.hooks.length > 0 && analysis.components.length > 0) {
     score += 5;
   }
-  
+
   return Math.max(0, Math.min(100, Math.round(score)));
+};
+
+// 리팩토링 프롬프트 생성 함수
+const generateRefactoringPrompt = (results, projectName = 'React Project') => {
+  if (!results || !results.summary) return '';
+
+  const { summary, files } = results;
+
+  // 문제가 있는 파일 식별 (품질 점수 70 미만)
+  const problematicFiles = files.filter(f => !f.error && f.qualityScore < 70);
+
+  // 각 지표별 문제 분석
+  const issues = [];
+  const refactoringGuidelines = [];
+
+  // 1. 복잡도 분석
+  const highComplexityFiles = files.filter(f => !f.error && f.metrics?.cyclomaticComplexity > 10);
+  if (highComplexityFiles.length > 0 || summary.avgCyclomaticComplexity > 8) {
+    issues.push({
+      metric: '순환 복잡도 (Cyclomatic Complexity)',
+      value: summary.avgCyclomaticComplexity,
+      threshold: 10,
+      status: 'high',
+      reason: `평균 순환 복잡도가 ${summary.avgCyclomaticComplexity}로, 조건문과 반복문이 과도하게 중첩되어 있습니다.`,
+      affectedFiles: highComplexityFiles.map(f => ({
+        name: f.filename,
+        value: f.metrics.cyclomaticComplexity,
+        functions: f.functions?.slice(0, 5) || []
+      }))
+    });
+    refactoringGuidelines.push('복잡한 조건문을 별도 함수로 추출');
+    refactoringGuidelines.push('중첩된 if문을 early return 패턴으로 변경');
+    refactoringGuidelines.push('switch문이 긴 경우 전략 패턴 또는 객체 매핑 고려');
+  }
+
+  // 2. 파일 크기 분석
+  const largeFiles = files.filter(f => !f.error && f.loc > 300);
+  if (largeFiles.length > 0) {
+    issues.push({
+      metric: '파일 크기 (Lines of Code)',
+      value: summary.totalLOC,
+      threshold: 300,
+      status: largeFiles.some(f => f.loc > 500) ? 'critical' : 'warning',
+      reason: `${largeFiles.length}개 파일이 300줄을 초과하여 단일 책임 원칙(SRP)을 위반할 가능성이 높습니다.`,
+      affectedFiles: largeFiles.map(f => ({
+        name: f.filename,
+        value: f.loc,
+        components: f.components || []
+      }))
+    });
+    refactoringGuidelines.push('하나의 파일에 여러 컴포넌트가 있다면 별도 파일로 분리');
+    refactoringGuidelines.push('유틸리티 함수를 별도 모듈로 추출');
+  }
+
+  // 3. 이벤트 핸들러 분석
+  const heavyHandlerFiles = files.filter(f => !f.error && (f.eventHandlers?.length || 0) > 5);
+  if (summary.totalEventHandlers > 10 || heavyHandlerFiles.length > 0) {
+    issues.push({
+      metric: '이벤트 핸들러 집중도',
+      value: summary.totalEventHandlers,
+      threshold: 10,
+      status: 'warning',
+      reason: `이벤트 핸들러가 ${summary.totalEventHandlers}개로, 컴포넌트가 너무 많은 상호작용을 담당합니다.`,
+      affectedFiles: heavyHandlerFiles.map(f => ({
+        name: f.filename,
+        value: f.eventHandlers.length,
+        handlers: f.eventHandlers
+      }))
+    });
+    refactoringGuidelines.push('이벤트 핸들러 내 비즈니스 로직을 커스텀 훅으로 추출');
+    refactoringGuidelines.push('복잡한 핸들러는 useCallback으로 감싸고 의존성 최소화');
+  }
+
+  // 4. 유지보수 지수 분석
+  const lowMIFiles = files.filter(f => !f.error && (f.metrics?.maintainabilityIndex || 100) < 50);
+  if (summary.avgMaintainabilityIndex < 60 || lowMIFiles.length > 0) {
+    issues.push({
+      metric: '유지보수 지수 (Maintainability Index)',
+      value: summary.avgMaintainabilityIndex,
+      threshold: 60,
+      status: summary.avgMaintainabilityIndex < 40 ? 'critical' : 'warning',
+      reason: `평균 유지보수 지수가 ${summary.avgMaintainabilityIndex}로, 코드 이해와 수정이 어렵습니다.`,
+      affectedFiles: lowMIFiles.map(f => ({
+        name: f.filename,
+        value: f.metrics.maintainabilityIndex
+      }))
+    });
+    refactoringGuidelines.push('긴 함수를 의미 단위로 분리');
+    refactoringGuidelines.push('매직 넘버를 명명된 상수로 변경');
+    refactoringGuidelines.push('주석이 필요한 복잡한 로직은 함수명으로 의도 표현');
+  }
+
+  // 5. 응집도 분석 (LCOM4)
+  const lowCohesionComponents = summary.cohesionAnalysis?.components?.filter(c => c.lcom4 >= 3) || [];
+  if (lowCohesionComponents.length > 0) {
+    issues.push({
+      metric: '응집도 (LCOM4)',
+      value: lowCohesionComponents.length,
+      threshold: 0,
+      status: 'warning',
+      reason: `${lowCohesionComponents.length}개 컴포넌트의 응집도가 낮아 여러 책임이 혼재되어 있습니다.`,
+      affectedFiles: lowCohesionComponents.map(c => ({
+        name: c.name,
+        value: c.lcom4,
+        methods: c.methods?.map(m => m.name) || []
+      }))
+    });
+    refactoringGuidelines.push('관련 없는 메서드들을 별도 컴포넌트나 훅으로 분리');
+    refactoringGuidelines.push('상태와 관련 로직을 커스텀 훅으로 추출');
+  }
+
+  // 6. 보안 이슈 분석
+  const securityIssueFiles = files.filter(f => !f.error && (f.issues?.length || 0) > 0);
+  if (summary.totalIssues > 0) {
+    issues.push({
+      metric: '보안 이슈',
+      value: summary.totalIssues,
+      threshold: 0,
+      status: 'critical',
+      reason: `${summary.totalIssues}개의 잠재적 보안 취약점이 발견되었습니다.`,
+      affectedFiles: securityIssueFiles.map(f => ({
+        name: f.filename,
+        issues: f.issues
+      }))
+    });
+    refactoringGuidelines.push('dangerouslySetInnerHTML 사용 시 DOMPurify로 새니타이징');
+    refactoringGuidelines.push('eval() 사용을 안전한 대안으로 교체');
+  }
+
+  // 문제가 없으면 빈 문자열 반환
+  if (issues.length === 0) {
+    return '';
+  }
+
+  // 프롬프트 생성
+  let prompt = `당신은 코드 품질 개선 전용 리팩토링 AI입니다.
+
+## 안전 제약 조건 (반드시 준수)
+- 기능 변경 금지: 모든 기존 기능이 동일하게 동작해야 합니다
+- 외부 API/인터페이스 변경 금지: props, 함수 시그니처, export 유지
+- 동작 동일성 100% 유지: 리팩토링 전후 동작이 완전히 동일해야 함
+- 구조적 리팩토링만 허용: 코드 구조 개선만 수행
+
+## 프로젝트 정보
+- 프로젝트명: ${projectName}
+- 전체 코드 품질 점수: ${summary.avgQualityScore}/100점
+- 분석된 파일 수: ${summary.totalFiles}개
+- 총 코드 라인: ${summary.totalLOC}줄
+
+## 발견된 품질 문제
+
+`;
+
+  issues.forEach((issue, index) => {
+    prompt += `### ${index + 1}. ${issue.metric}
+- 현재 값: ${issue.value}
+- 기준값: ${issue.threshold}
+- 상태: ${issue.status === 'critical' ? '심각' : issue.status === 'high' ? '높음' : '주의'}
+- 문제 요약: ${issue.reason}
+
+영향받는 파일/컴포넌트:
+`;
+    issue.affectedFiles.forEach(file => {
+      prompt += `- ${file.name}`;
+      if (file.value !== undefined) prompt += ` (값: ${file.value})`;
+      if (file.functions?.length > 0) prompt += `\n  함수: ${file.functions.join(', ')}`;
+      if (file.handlers?.length > 0) prompt += `\n  핸들러: ${file.handlers.join(', ')}`;
+      if (file.methods?.length > 0) prompt += `\n  메서드: ${file.methods.join(', ')}`;
+      if (file.issues?.length > 0) prompt += `\n  이슈: ${file.issues.map(i => i.message).join(', ')}`;
+      prompt += '\n';
+    });
+    prompt += '\n';
+  });
+
+  prompt += `## 적용해야 할 리팩토링 지침
+`;
+  [...new Set(refactoringGuidelines)].forEach((guideline, index) => {
+    prompt += `${index + 1}. ${guideline}\n`;
+  });
+
+  prompt += `
+## 출력 형식 (반드시 준수)
+- 수정된 전체 코드만 출력하세요
+- 설명 문구 출력 금지
+- 코드 블록 외 텍스트 출력 금지
+- 각 파일은 파일명 주석으로 구분: // filename.jsx
+
+## 리팩토링 대상 코드
+아래에 리팩토링이 필요한 코드를 붙여넣으세요:
+
+\`\`\`jsx
+// 여기에 코드를 붙여넣으세요
+\`\`\`
+`;
+
+  return prompt;
+};
+
+// 코드 스니펫 추출 함수 (선택된 파일의 주요 문제 부분)
+const extractCodeSnippet = (file, maxLines = 50) => {
+  // 실제 구현에서는 파일 내용을 기반으로 문제 부분을 추출
+  // 현재는 파일 정보만 반환
+  return {
+    filename: file.filename,
+    summary: {
+      loc: file.loc,
+      functions: file.functions?.slice(0, 10) || [],
+      eventHandlers: file.eventHandlers || [],
+      components: file.components || [],
+      complexity: file.metrics?.cyclomaticComplexity || 0
+    }
+  };
 };
 
 const CircularGauge = ({ score }) => {
@@ -1139,7 +1351,7 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
           fill: '#dbeafe',
           stroke: '#3b82f6',
           text: '#1e40af',
-          icon: '⚛️',
+          icon: 'react',
           label: 'Component'
         };
       case 'handler':
@@ -1347,14 +1559,24 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
           style={{ transition: 'all 0.2s ease' }}
         />
         {/* 아이콘 */}
-        <text
-          x={-size.width / 2 + 14}
-          y={0}
-          fontSize="14"
-          dominantBaseline="middle"
-        >
-          {style.icon}
-        </text>
+        {style.icon === 'react' ? (
+          <image
+            href="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/react/react-original.svg"
+            x={-size.width / 2 + 6}
+            y={-9}
+            width="18"
+            height="18"
+          />
+        ) : (
+          <text
+            x={-size.width / 2 + 14}
+            y={0}
+            fontSize="14"
+            dominantBaseline="middle"
+          >
+            {style.icon}
+          </text>
+        )}
         {/* 함수 이름 */}
         <text
           x={8}
@@ -1519,7 +1741,10 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
           <div style={styles.legendItems}>
             <div style={styles.legendItem}>
               <div style={{ ...styles.legendBox, background: '#dbeafe', border: '2px solid #3b82f6' }}></div>
-              <span>⚛️ Component</span>
+              <span style={styles.legendItemText}>
+                <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/react/react-original.svg" alt="React" style={styles.legendReactIcon} />
+                Component
+              </span>
             </div>
             <div style={styles.legendItem}>
               <div style={{ ...styles.legendBox, background: '#fef3c7', border: '2px solid #f59e0b' }}></div>
@@ -1884,7 +2109,8 @@ const CohesionDiagram = ({ cohesionAnalysis }) => {
       }}>
         <div style={styles.cohesionHeaderLeft}>
           <span style={{ ...styles.cohesionComponentName, color: lcom4Style.text }}>
-            ⚛️ {name}
+            <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/react/react-original.svg" alt="React" style={styles.cohesionReactIcon} />
+            {name}
           </span>
           <span style={styles.cohesionMethodCount}>
             {methodCount}개 메서드
@@ -2034,6 +2260,158 @@ const CohesionDiagram = ({ cohesionAnalysis }) => {
           <span style={styles.statLabel}>리팩토링 권장</span>
         </div>
       </div>
+    </div>
+  );
+};
+
+// 리팩토링 프롬프트 패널 컴포넌트
+const RefactoringPromptPanel = ({ results, projectName = 'React Project' }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [generatedPrompt, setGeneratedPrompt] = useState('');
+
+  const handleGeneratePrompt = () => {
+    const prompt = generateRefactoringPrompt(results, projectName);
+    setGeneratedPrompt(prompt);
+    setIsExpanded(true);
+  };
+
+  const handleCopyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(generatedPrompt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      // 폴백: textarea를 사용한 복사
+      const textarea = document.createElement('textarea');
+      textarea.value = generatedPrompt;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleClose = () => {
+    setIsExpanded(false);
+    setGeneratedPrompt('');
+  };
+
+  // 문제가 있는지 확인
+  const hasIssues = results?.summary?.avgQualityScore < 70 ||
+    results?.summary?.avgCyclomaticComplexity > 8 ||
+    results?.summary?.totalIssues > 0 ||
+    results?.summary?.avgMaintainabilityIndex < 60 ||
+    results?.files?.some(f => !f.error && f.qualityScore < 70);
+
+  if (!hasIssues) {
+    return (
+      <div style={styles.refactoringPanelContainer}>
+        <div style={styles.refactoringNoIssues}>
+          <span style={styles.refactoringNoIssuesIcon}>✨</span>
+          <div>
+            <h4 style={styles.refactoringNoIssuesTitle}>코드 품질이 양호합니다</h4>
+            <p style={styles.refactoringNoIssuesText}>
+              현재 분석 결과에서 심각한 품질 문제가 발견되지 않았습니다.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.refactoringPanelContainer}>
+      {/* 헤더 영역 */}
+      <div style={styles.refactoringHeader}>
+        <div style={styles.refactoringHeaderLeft}>
+          <span style={styles.refactoringIcon}>🤖</span>
+          <div>
+            <h3 style={styles.refactoringTitle}>AI 리팩토링 프롬프트 생성</h3>
+            <p style={styles.refactoringSubtitle}>
+              분석 결과를 기반으로 Claude, GPT 등 AI에게 전달할 리팩토링 지시문을 생성합니다
+            </p>
+          </div>
+        </div>
+        {!isExpanded && (
+          <button style={styles.refactoringGenerateBtn} onClick={handleGeneratePrompt}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 3v18M3 12h18" />
+            </svg>
+            프롬프트 생성하기
+          </button>
+        )}
+      </div>
+
+      {/* 안내 배지 */}
+      {!isExpanded && (
+        <div style={styles.refactoringBadges}>
+          <span style={styles.refactoringBadge}>
+            <span style={styles.badgeIcon}>🎯</span>
+            분석 결과 기반
+          </span>
+          <span style={styles.refactoringBadge}>
+            <span style={styles.badgeIcon}>🔒</span>
+            기능 변경 없음
+          </span>
+          <span style={styles.refactoringBadge}>
+            <span style={styles.badgeIcon}>📋</span>
+            복사하여 AI에 전달
+          </span>
+        </div>
+      )}
+
+      {/* 프롬프트 미리보기 패널 */}
+      {isExpanded && generatedPrompt && (
+        <div style={styles.refactoringPromptArea}>
+          <div style={styles.refactoringPromptHeader}>
+            <span style={styles.refactoringPromptLabel}>생성된 프롬프트</span>
+            <div style={styles.refactoringPromptActions}>
+              <button
+                style={{
+                  ...styles.refactoringCopyBtn,
+                  ...(copied ? styles.refactoringCopyBtnCopied : {})
+                }}
+                onClick={handleCopyPrompt}
+              >
+                {copied ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    복사됨!
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    프롬프트 복사
+                  </>
+                )}
+              </button>
+              <button style={styles.refactoringCloseBtn} onClick={handleClose}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+                닫기
+              </button>
+            </div>
+          </div>
+          <div style={styles.refactoringPromptContent}>
+            <pre style={styles.refactoringPromptText}>{generatedPrompt}</pre>
+          </div>
+          <div style={styles.refactoringPromptFooter}>
+            <span style={styles.refactoringPromptHint}>
+              💡 이 프롬프트를 복사하여 Claude, GPT 등 AI 도구에 붙여넣고, 리팩토링할 코드를 함께 전달하세요.
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -2531,6 +2909,12 @@ const App = () => {
             cohesionAnalysis={results.summary.cohesionAnalysis}
           />
         </div>
+
+        {/* AI 리팩토링 프롬프트 생성 섹션 */}
+        <RefactoringPromptPanel
+          results={results}
+          projectName="React Project"
+        />
 
         <div style={styles.filesSection}>
           <h3 style={styles.sectionTitle}>📁 파일별 분석 결과</h3>
@@ -3324,6 +3708,21 @@ const styles = {
     gap: '8px',
     fontSize: '12px',
     color: '#6b7280',
+  },
+  legendItemText: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+  },
+  legendReactIcon: {
+    width: '14px',
+    height: '14px',
+  },
+  cohesionReactIcon: {
+    width: '18px',
+    height: '18px',
+    marginRight: '4px',
+    verticalAlign: 'middle',
   },
   legendDot: {
     width: '14px',
@@ -4151,6 +4550,178 @@ const styles = {
     fontSize: '12px',
     color: '#d1d5db',
     lineHeight: '1.5',
+    margin: 0,
+  },
+  // 리팩토링 프롬프트 패널 스타일
+  refactoringPanelContainer: {
+    maxWidth: '1200px',
+    margin: '0 auto 32px',
+    background: 'linear-gradient(145deg, #fefce8 0%, #fef9c3 100%)',
+    borderRadius: '20px',
+    padding: '24px 28px',
+    boxShadow: '0 4px 24px rgba(234, 179, 8, 0.15), 0 1px 3px rgba(0, 0, 0, 0.04)',
+    border: '1px solid rgba(234, 179, 8, 0.3)',
+  },
+  refactoringHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: '16px',
+  },
+  refactoringHeaderLeft: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '16px',
+  },
+  refactoringIcon: {
+    fontSize: '32px',
+    lineHeight: '1',
+  },
+  refactoringTitle: {
+    fontSize: '18px',
+    fontWeight: '700',
+    color: '#92400e',
+    margin: '0 0 4px 0',
+  },
+  refactoringSubtitle: {
+    fontSize: '13px',
+    color: '#a16207',
+    margin: 0,
+    lineHeight: '1.5',
+  },
+  refactoringGenerateBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '12px 20px',
+    background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '12px',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    boxShadow: '0 4px 12px rgba(245, 158, 11, 0.3)',
+  },
+  refactoringBadges: {
+    display: 'flex',
+    gap: '12px',
+    marginTop: '16px',
+    flexWrap: 'wrap',
+  },
+  refactoringBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 14px',
+    background: 'rgba(255, 255, 255, 0.7)',
+    borderRadius: '20px',
+    fontSize: '12px',
+    color: '#92400e',
+    fontWeight: '500',
+    border: '1px solid rgba(234, 179, 8, 0.3)',
+  },
+  refactoringPromptArea: {
+    marginTop: '20px',
+    background: '#ffffff',
+    borderRadius: '16px',
+    border: '1px solid #e5e7eb',
+    overflow: 'hidden',
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)',
+  },
+  refactoringPromptHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '14px 20px',
+    background: '#f9fafb',
+    borderBottom: '1px solid #e5e7eb',
+  },
+  refactoringPromptLabel: {
+    fontSize: '14px',
+    fontWeight: '600',
+    color: '#374151',
+  },
+  refactoringPromptActions: {
+    display: 'flex',
+    gap: '8px',
+  },
+  refactoringCopyBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 16px',
+    background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  refactoringCopyBtnCopied: {
+    background: 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
+  },
+  refactoringCloseBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 14px',
+    background: '#f3f4f6',
+    color: '#6b7280',
+    border: '1px solid #e5e7eb',
+    borderRadius: '8px',
+    fontSize: '13px',
+    fontWeight: '500',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  refactoringPromptContent: {
+    maxHeight: '400px',
+    overflow: 'auto',
+    padding: '20px',
+    background: '#1f2937',
+  },
+  refactoringPromptText: {
+    margin: 0,
+    fontFamily: "'Fira Code', 'Consolas', monospace",
+    fontSize: '13px',
+    lineHeight: '1.6',
+    color: '#e5e7eb',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  },
+  refactoringPromptFooter: {
+    padding: '14px 20px',
+    background: '#f0fdf4',
+    borderTop: '1px solid #bbf7d0',
+  },
+  refactoringPromptHint: {
+    fontSize: '13px',
+    color: '#166534',
+    lineHeight: '1.5',
+  },
+  refactoringNoIssues: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+    padding: '8px 0',
+  },
+  refactoringNoIssuesIcon: {
+    fontSize: '28px',
+  },
+  refactoringNoIssuesTitle: {
+    fontSize: '16px',
+    fontWeight: '600',
+    color: '#166534',
+    margin: '0 0 4px 0',
+  },
+  refactoringNoIssuesText: {
+    fontSize: '13px',
+    color: '#15803d',
     margin: 0,
   },
 };
