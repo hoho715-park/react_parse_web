@@ -536,41 +536,166 @@ const calculateQualityScore = (analysis) => {
 };
 
 const CircularGauge = ({ score }) => {
-  const radius = 80;
+  const [animatedScore, setAnimatedScore] = useState(0);
+  const [isVisible, setIsVisible] = useState(false);
+
+  // 점수 애니메이션
+  useState(() => {
+    setIsVisible(true);
+    const duration = 1500;
+    const steps = 60;
+    const increment = score / steps;
+    let current = 0;
+    const timer = setInterval(() => {
+      current += increment;
+      if (current >= score) {
+        setAnimatedScore(score);
+        clearInterval(timer);
+      } else {
+        setAnimatedScore(Math.round(current));
+      }
+    }, duration / steps);
+    return () => clearInterval(timer);
+  });
+
+  const radius = 85;
   const strokeWidth = 12;
   const circumference = 2 * Math.PI * radius;
-  const progress = (score / 100) * circumference * 0.75;
-  
-  const getColor = (score) => {
-    if (score >= 80) return '#22c55e';
-    if (score >= 60) return '#eab308';
-    if (score >= 40) return '#f97316';
-    return '#ef4444';
+  const totalArc = circumference * 0.75; // 270도 호
+  const progress = (animatedScore / 100) * totalArc;
+  const remaining = totalArc - progress;
+
+  // 품질 스케일 데이터 (낮은 품질 → 높은 품질: CRITICAL → VERY LOW)
+  // 색상: 빨강 → 주황 → 노랑 → 초록 → 파랑
+  const qualityLevels = [
+    { label: 'CRITICAL', color: '#ef4444', range: [0, 19], message: '즉각적인 리팩토링이 필요합니다.' },
+    { label: 'HIGH', color: '#f97316', range: [20, 39], message: '유지보수를 위해 개선이 권장됩니다.' },
+    { label: 'MEDIUM', color: '#eab308', range: [40, 59], message: '일부 개선이 필요한 코드 품질입니다.' },
+    { label: 'LOW', color: '#22c55e', range: [60, 79], message: '코드 품질이 안정적인 상태입니다.' },
+    { label: 'VERY LOW', color: '#3b82f6', range: [80, 100], message: '전반적으로 코드 품질이 매우 우수합니다.' },
+  ];
+
+  // 점수에 해당하는 품질 레벨 찾기
+  const getCurrentLevel = (score) => {
+    for (const level of qualityLevels) {
+      if (score >= level.range[0] && score <= level.range[1]) {
+        return level;
+      }
+    }
+    return qualityLevels[0];
   };
 
+  const currentLevel = getCurrentLevel(score);
+
+  // 점수를 퍼센트 위치로 변환 (0점 = 0%, 100점 = 100%)
+  const pointerPosition = score;
+
   return (
-    <div style={styles.gaugeContainer}>
-      <svg width="200" height="200" viewBox="0 0 200 200">
-        <path
-          d="M 100 180 A 80 80 0 1 1 100 20"
-          fill="none"
-          stroke="#e5e7eb"
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-        />
-        <path
-          d="M 100 180 A 80 80 0 1 1 100 20"
-          fill="none"
-          stroke={getColor(score)}
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-          strokeDasharray={`${progress} ${circumference}`}
-          style={{ transition: 'stroke-dasharray 1s ease-out' }}
-        />
-      </svg>
-      <div style={styles.gaugeScore}>
-        <span style={{ ...styles.gaugeNumber, color: getColor(score) }}>{score}</span>
-        <span style={styles.gaugeMax}>/ 100</span>
+    <div style={styles.gaugeWrapper}>
+      {/* 원형 게이지 섹션 */}
+      <div style={{
+        ...styles.premiumGaugeContainer,
+        opacity: isVisible ? 1 : 0,
+        transform: isVisible ? 'translateY(0)' : 'translateY(10px)',
+      }}>
+        <svg width="160" height="160" viewBox="0 0 220 220" style={{ position: 'relative', zIndex: 1 }}>
+          <defs>
+            <filter id="gaugeShadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor={currentLevel.color} floodOpacity="0.25"/>
+            </filter>
+          </defs>
+
+          {/* 잔여 영역 (회색 트랙) - 전체 호 */}
+          <path
+            d="M 110 195 A 85 85 0 1 1 110 25"
+            fill="none"
+            stroke="#e5e7eb"
+            strokeWidth={strokeWidth}
+            strokeLinecap="round"
+            strokeOpacity={0.5}
+          />
+
+          {/* 점수 바 (채워진 영역) */}
+          <path
+            d="M 110 195 A 85 85 0 1 1 110 25"
+            fill="none"
+            stroke={currentLevel.color}
+            strokeWidth={strokeWidth}
+            strokeLinecap="round"
+            strokeDasharray={`${progress} ${circumference}`}
+            filter="url(#gaugeShadow)"
+            style={{ transition: 'stroke-dasharray 1.5s cubic-bezier(0.4, 0, 0.2, 1)' }}
+          />
+        </svg>
+
+        {/* 중앙 점수 표시 */}
+        <div style={styles.gaugeScoreCenter}>
+          <span style={{
+            ...styles.premiumGaugeNumber,
+            color: currentLevel.color,
+          }}>
+            {animatedScore}
+          </span>
+          <span style={{
+            ...styles.premiumGaugeMax,
+            color: currentLevel.color,
+            opacity: 0.6,
+          }}>/100</span>
+        </div>
+      </div>
+
+      {/* 품질 수준 인디케이터 */}
+      <div style={styles.riskMeterContainer}>
+        <div style={styles.riskMeterBar}>
+          {qualityLevels.map((level, index) => (
+            <div
+              key={level.label}
+              style={{
+                ...styles.riskMeterSegment,
+                background: level.color,
+                borderRadius: index === 0 ? '4px 0 0 4px' : index === qualityLevels.length - 1 ? '0 4px 4px 0' : '0',
+              }}
+            />
+          ))}
+          {/* 포인터 */}
+          <div style={{
+            ...styles.riskMeterPointer,
+            left: `${pointerPosition}%`,
+          }}>
+            <div style={{
+              ...styles.riskMeterArrow,
+              borderTopColor: currentLevel.color,
+            }} />
+            <div style={{
+              ...styles.riskMeterPointerLabel,
+              background: currentLevel.color,
+            }}>
+              {animatedScore}
+            </div>
+          </div>
+        </div>
+        <div style={styles.riskMeterLabels}>
+          {qualityLevels.map((level) => (
+            <span
+              key={level.label}
+              style={{
+                ...styles.riskMeterLabel,
+                color: level.label === currentLevel.label ? currentLevel.color : '#9ca3af',
+                fontWeight: level.label === currentLevel.label ? '700' : '500',
+              }}
+            >
+              {level.label}
+            </span>
+          ))}
+        </div>
+
+        {/* 한 줄 평 */}
+        <div style={{
+          ...styles.qualitySummaryText,
+          color: currentLevel.color,
+        }}>
+          {currentLevel.message}
+        </div>
       </div>
     </div>
   );
@@ -609,12 +734,13 @@ const QualityInfoModal = ({ isOpen, onClose }) => {
           </div>
 
           <div style={styles.modalSection}>
-            <h4 style={styles.modalSubtitle}>📈 점수 해석</h4>
+            <h4 style={styles.modalSubtitle}>📈 점수 해석 (위험 수준)</h4>
             <div style={styles.scoreGuide}>
-              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#22c55e'}}></span> 80-100점: 우수한 코드 품질</div>
-              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#eab308'}}></span> 60-79점: 양호, 개선 권장</div>
-              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#f97316'}}></span> 40-59점: 리팩토링 필요</div>
-              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#ef4444'}}></span> 0-39점: 즉시 개선 필요</div>
+              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#3b82f6'}}></span> 80-100점 (VERY LOW): 매우 우수한 코드 품질</div>
+              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#22c55e'}}></span> 60-79점 (LOW): 안정적인 코드 품질</div>
+              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#eab308'}}></span> 40-59점 (MEDIUM): 일부 개선 필요</div>
+              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#f97316'}}></span> 20-39점 (HIGH): 개선 권장</div>
+              <div style={styles.scoreRow}><span style={{...styles.scoreDot, background: '#ef4444'}}></span> 0-19점 (CRITICAL): 즉시 리팩토링 필요</div>
             </div>
           </div>
         </div>
@@ -623,61 +749,230 @@ const QualityInfoModal = ({ isOpen, onClose }) => {
   );
 };
 
-const TooltipBar = ({ item }) => {
+const PremiumMetricCard = ({ item, index }) => {
+  const [isHovered, setIsHovered] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
-  const [showValueTooltip, setShowValueTooltip] = useState(false);
+  const [animatedValue, setAnimatedValue] = useState(0);
 
-  const descriptions = {
-    '함수 복잡도': '코드 내 조건문(if, switch)과 반복문(for, while)의 수를 측정합니다. 값이 낮을수록 코드가 단순하고 이해하기 쉽습니다.',
-    '변수 관리': '선언된 변수의 수와 관리 상태를 평가합니다. 불필요한 변수가 적을수록 점수가 높습니다.',
-    '이벤트 핸들러': '컴포넌트 내 이벤트 핸들러(onClick, onChange 등)의 적절한 사용을 평가합니다.',
-    '유지보수 지수': '코드의 유지보수 용이성을 나타내는 종합 지표입니다. 100에 가까울수록 유지보수가 쉽습니다.',
+  // 값 애니메이션
+  useState(() => {
+    const duration = 1000;
+    const steps = 40;
+    const increment = item.value / steps;
+    let current = 0;
+    const delay = index * 150;
+    setTimeout(() => {
+      const timer = setInterval(() => {
+        current += increment;
+        if (current >= item.value) {
+          setAnimatedValue(item.value);
+          clearInterval(timer);
+        } else {
+          setAnimatedValue(Math.round(current));
+        }
+      }, duration / steps);
+    }, delay);
+  });
+
+  // 지표별 상세 설정 (쉬운 설명 + 해석 + 가이드 중심 문구)
+  const metricConfig = {
+    '함수 복잡도': {
+      icon: '🔄',
+      simpleDesc: '함수 안에 조건문과 반복문이 얼마나 복잡하게 얽혀 있는지를 나타냅니다.',
+      interpretation: '점수가 낮을수록 코드 흐름을 이해하고 수정하기 어렵습니다.',
+      tooltipProblem: '복잡도가 높으면 버그 발생 가능성이 높아지고, 새로운 기능 추가 시 예상치 못한 오류가 생길 수 있습니다.',
+      statusText: (v) => v >= 70
+        ? '코드 흐름이 명확하고 이해하기 쉽습니다'
+        : v >= 40
+          ? '일부 함수의 로직을 단순화하면 가독성이 향상됩니다'
+          : '함수를 작은 단위로 분리하면 유지보수가 훨씬 쉬워집니다',
+      gradient: ['#ec4899', '#f472b6'],
+    },
+    '변수 관리': {
+      icon: '📦',
+      simpleDesc: '변수가 선언되고 사용되는 방식이 얼마나 깔끔한지를 평가합니다.',
+      interpretation: '점수가 높을수록 변수 역할이 명확하고 관리가 쉽습니다.',
+      tooltipProblem: '변수 관리가 부실하면 어떤 값이 어디서 변경되는지 추적하기 어렵고, 의도치 않은 값 변경으로 버그가 발생할 수 있습니다.',
+      statusText: (v) => v >= 70
+        ? '변수 구조가 체계적으로 관리되고 있습니다'
+        : v >= 40
+          ? '사용하지 않는 변수를 정리하면 코드가 더 깔끔해집니다'
+          : '변수 범위와 네이밍을 개선하면 코드 이해도가 높아집니다',
+      gradient: ['#f59e0b', '#fbbf24'],
+    },
+    '이벤트 핸들러': {
+      icon: '🎯',
+      simpleDesc: '하나의 이벤트가 얼마나 많은 일을 처리하고 있는지를 나타냅니다.',
+      interpretation: '점수가 낮으면 이벤트 로직을 분리하는 것이 좋습니다.',
+      tooltipProblem: '핸들러가 너무 많은 일을 하면 테스트가 어렵고, 한 부분 수정이 다른 기능에 영향을 줄 수 있습니다.',
+      statusText: (v) => v >= 70
+        ? '이벤트 처리 로직이 적절하게 분리되어 있습니다'
+        : v >= 40
+          ? '일부 핸들러의 책임을 분리하면 테스트가 쉬워집니다'
+          : '핸들러를 더 작은 함수로 나누면 관리가 편해집니다',
+      gradient: ['#8b5cf6', '#a78bfa'],
+    },
+    '유지보수 지수': {
+      icon: '🛠️',
+      simpleDesc: '코드를 수정하고 확장하기 쉬운지를 종합적으로 평가한 지표입니다.',
+      interpretation: '점수가 높을수록 장기적인 유지보수가 용이합니다.',
+      tooltipProblem: '유지보수 지수가 낮으면 간단한 수정에도 많은 시간이 들고, 새로운 팀원이 코드를 이해하는 데 어려움을 겪습니다.',
+      statusText: (v) => v >= 70
+        ? '코드 구조가 확장과 수정에 유연합니다'
+        : v >= 40
+          ? '구조 개선을 통해 향후 작업 효율을 높일 수 있습니다'
+          : '점진적인 리팩토링으로 유지보수성을 개선해 보세요',
+      gradient: ['#3b82f6', '#60a5fa'],
+    },
   };
 
+  const config = metricConfig[item.name] || {
+    icon: '📊',
+    simpleDesc: '지표 설명',
+    interpretation: '해석 정보',
+    tooltipProblem: '문제 설명',
+    statusText: () => '상태 확인 중',
+    gradient: ['#6b7280', '#9ca3af'],
+  };
+
+  // 점수에 따른 색상 (0-40: 빨강, 40-70: 주황/노랑, 70-100: 초록/파랑)
+  const getScoreColor = (value) => {
+    if (value >= 70) return '#22c55e';
+    if (value >= 40) return '#f59e0b';
+    return '#ef4444';
+  };
+
+  const getStatusLevel = (value) => {
+    if (value >= 70) return { label: '양호', bg: '#f0fdf4', border: '#bbf7d0' };
+    if (value >= 40) return { label: '주의', bg: '#fffbeb', border: '#fde68a' };
+    return { label: '개선 필요', bg: '#fef2f2', border: '#fecaca' };
+  };
+
+  const scoreColor = getScoreColor(item.value);
+  const statusLevel = getStatusLevel(item.value);
+
   return (
-    <div style={styles.barRow}>
-      <div style={styles.barLabelContainer}>
-        <span 
-          style={styles.barLabel}
-          onMouseEnter={() => setShowTooltip(true)}
-          onMouseLeave={() => setShowTooltip(false)}
-        >
-          {item.name}
-          {showTooltip && (
-            <div style={styles.tooltip}>
-              {descriptions[item.name]}
-            </div>
-          )}
-        </span>
-      </div>
-      <div 
-        style={styles.barTrack}
-        onMouseEnter={() => setShowValueTooltip(true)}
-        onMouseLeave={() => setShowValueTooltip(false)}
-      >
-        <div 
-          style={{
-            ...styles.barFill,
-            width: `${item.value}%`,
-            backgroundColor: item.color,
-          }}
-        />
-        {showValueTooltip && (
-          <div style={styles.barValueTooltip}>
-            {Math.round(item.value)} / 100
+    <div
+      style={{
+        ...styles.metricCardContainer,
+        transform: isHovered ? 'translateY(-2px)' : 'translateY(0)',
+        boxShadow: isHovered
+          ? '0 8px 30px rgba(0, 0, 0, 0.1)'
+          : '0 2px 12px rgba(0, 0, 0, 0.04)',
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      {/* 상단: 아이콘 + 지표명 + 점수 */}
+      <div style={styles.metricCardTop}>
+        <div style={styles.metricCardTitleRow}>
+          <div style={styles.metricIconBox}>
+            <span style={styles.metricIconText}>{config.icon}</span>
           </div>
-        )}
+          <div style={styles.metricTitleGroup}>
+            <span style={styles.metricCardTitle}>{item.name}</span>
+            <div style={styles.metricInfoBtnWrapper}>
+              <button
+                style={styles.metricInfoBtn}
+                onMouseEnter={() => setShowTooltip(true)}
+                onMouseLeave={() => setShowTooltip(false)}
+              >
+                ?
+              </button>
+              {showTooltip && (
+                <div style={styles.metricTooltipBox}>
+                  <div style={styles.metricTooltipTitle}>이 지표가 낮으면?</div>
+                  <div style={styles.metricTooltipContent}>{config.tooltipProblem}</div>
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={styles.metricScoreBox}>
+            <span style={{ ...styles.metricScoreNum, color: scoreColor }}>
+              {Math.round(animatedValue)}
+            </span>
+            <span style={styles.metricScoreUnit}>/100</span>
+          </div>
+        </div>
+
+      </div>
+
+      {/* 설명 영역 */}
+      <div style={styles.metricDescSection}>
+        <p style={styles.metricSimpleDesc}>{config.simpleDesc}</p>
+        <p style={styles.metricInterpretation}>{config.interpretation}</p>
+      </div>
+
+      {/* 프로그레스 바 */}
+      <div style={styles.metricProgressSection}>
+        <div style={styles.metricProgressTrack}>
+          <div
+            style={{
+              ...styles.metricProgressFill,
+              width: `${animatedValue}%`,
+              background: `linear-gradient(90deg, ${config.gradient[0]}, ${config.gradient[1]})`,
+            }}
+          />
+        </div>
+        <div style={styles.metricProgressLabels}>
+          <span style={styles.metricProgressLabel}>0</span>
+          <span style={{ ...styles.metricProgressLabel, color: '#f59e0b' }}>40</span>
+          <span style={{ ...styles.metricProgressLabel, color: '#22c55e' }}>70</span>
+          <span style={styles.metricProgressLabel}>100</span>
+        </div>
+      </div>
+
+      {/* 상태 요약 */}
+      <div style={{
+        ...styles.metricStatusBox,
+        background: statusLevel.bg,
+        borderColor: statusLevel.border,
+      }}>
+        <span style={{ ...styles.metricStatusLabel, color: scoreColor }}>
+          {statusLevel.label}
+        </span>
+        <span style={styles.metricStatusText}>
+          {config.statusText(item.value)}
+        </span>
       </div>
     </div>
   );
 };
 
 const CustomRadarTooltip = ({ active, payload }) => {
+  const metricDetails = {
+    'LOC': { fullName: 'Lines of Code', description: '코드의 총 줄 수', ideal: '적정 수준' },
+    'Cyclomatic': { fullName: 'Cyclomatic Complexity', description: '순환 복잡도', ideal: '10 이하 권장' },
+    'CBO': { fullName: 'Coupling Between Objects', description: '객체 간 결합도', ideal: '낮을수록 좋음' },
+    'WMC': { fullName: 'Weighted Methods', description: '메서드 복잡도 총합', ideal: '적정 수준' },
+    'MI': { fullName: 'Maintainability Index', description: '유지보수 지수', ideal: '65 이상 권장' },
+  };
+
   if (active && payload && payload.length) {
     const data = payload[0].payload;
+    const details = metricDetails[data.subject] || {};
+    const value = Math.round(data.A);
+    const status = value >= 70 ? '양호' : value >= 40 ? '주의' : '위험';
+    const statusColor = value >= 70 ? '#10b981' : value >= 40 ? '#f59e0b' : '#ef4444';
+
     return (
-      <div style={styles.radarTooltipBox}>
-        <strong>{data.subject}</strong>: {Math.round(data.A)} / 100
+      <div style={styles.premiumRadarTooltip}>
+        <div style={styles.radarTooltipHeader}>
+          <span style={styles.radarTooltipTitle}>{details.fullName || data.subject}</span>
+          <span style={{
+            ...styles.radarTooltipStatus,
+            background: statusColor + '20',
+            color: statusColor,
+          }}>{status}</span>
+        </div>
+        <div style={styles.radarTooltipDesc}>{details.description}</div>
+        <div style={styles.radarTooltipValue}>
+          <span style={styles.radarTooltipNumber}>{value}</span>
+          <span style={styles.radarTooltipMax}>/100</span>
+        </div>
+        <div style={styles.radarTooltipIdeal}>
+          💡 {details.ideal}
+        </div>
       </div>
     );
   }
@@ -2087,66 +2382,125 @@ const App = () => {
           </div>
         </div>
 
-        <div style={styles.dashboardGrid}>
-          <div style={styles.chartCard}>
-            <div style={styles.chartTitleRow}>
-              <h3 style={styles.chartTitle}>
-                <span style={styles.chartIcon}>🎯</span> 코드 품질 점수
-              </h3>
-              <button style={styles.infoButton} onClick={() => setShowQualityInfo(true)}>
-                ❓ 계산 방법
-              </button>
+        <div style={styles.premiumDashboardGrid}>
+          {/* 코드 품질 점수 카드 */}
+          <div style={styles.premiumScoreCard}>
+            <div style={styles.premiumCardHeader}>
+              <div style={styles.premiumCardTitleRow}>
+                <h3 style={styles.premiumCardTitle}>
+                  <span style={styles.premiumCardIcon}>🎯</span>
+                  코드 품질 점수
+                </h3>
+                <button style={styles.premiumInfoButton} onClick={() => setShowQualityInfo(true)}>
+                  <span>계산 방법</span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                    <path d="M12 17h.01"/>
+                  </svg>
+                </button>
+              </div>
+              <p style={styles.premiumCardSubtitle}>
+                종합적인 코드 품질을 100점 만점으로 평가합니다
+              </p>
             </div>
             <CircularGauge score={results.summary.avgQualityScore} />
           </div>
 
-          <div style={styles.chartCardBar}>
-            <div style={styles.chartTitleSection}>
-              <h3 style={styles.chartTitle}>
-                <span style={styles.chartIcon}>📈</span> 품질 지표 분석
+        </div>
+
+        {/* 품질 지표 분석 섹션 (별도 풀 와이드) */}
+        <div style={styles.metricsAnalysisSection}>
+          <div style={styles.metricsAnalysisHeader}>
+            <div>
+              <h3 style={styles.metricsAnalysisTitle}>
+                <span style={styles.premiumCardIcon}>📊</span>
+                품질 지표 분석
               </h3>
-              <p style={styles.chartHint}>* 각 항목에 마우스를 올려 설명을 확인하세요</p>
+              <p style={styles.metricsAnalysisSubtitle}>
+                각 지표가 무엇을 의미하는지, 현재 상태가 어떤지 이해해 보세요
+              </p>
             </div>
-            <div style={styles.barChartWrapper}>
-              <div style={styles.barChartContainer}>
-                {qualityBarData.map((item, index) => (
-                  <TooltipBar key={index} item={item} />
-                ))}
-              </div>
+            <div style={styles.metricsLegend}>
+              <span style={styles.metricsLegendItem}>
+                <span style={{ ...styles.metricsLegendDot, background: '#22c55e' }}></span>
+                70+ 양호
+              </span>
+              <span style={styles.metricsLegendItem}>
+                <span style={{ ...styles.metricsLegendDot, background: '#f59e0b' }}></span>
+                40-69 주의
+              </span>
+              <span style={styles.metricsLegendItem}>
+                <span style={{ ...styles.metricsLegendDot, background: '#ef4444' }}></span>
+                0-39 개선 필요
+              </span>
             </div>
+          </div>
+          <div style={styles.metricsCardsGrid}>
+            {qualityBarData.map((item, index) => (
+              <PremiumMetricCard key={index} item={item} index={index} />
+            ))}
           </div>
         </div>
 
-        <div style={styles.radarCard}>
-          <h3 style={styles.chartTitle}>
-            <span style={styles.chartIcon}>📡</span> 확장 메트릭 레이더
-          </h3>
-          <p style={styles.chartHint}>* 각 축 이름에 마우스를 올려 설명을 확인하세요</p>
-          <div style={styles.radarChartWrapper}>
-            <ResponsiveContainer width="100%" height={320}>
-              <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="65%">
-                <PolarGrid stroke="#e5e7eb" />
-                <PolarAngleAxis 
-                  dataKey="subject" 
-                  tick={<CustomAxisTick />}
-                />
-                <PolarRadiusAxis 
-                  angle={90} 
-                  domain={[0, 100]} 
-                  tick={{ fill: '#9ca3af', fontSize: 10 }}
-                  axisLine={false}
-                />
-                <Radar
-                  name="메트릭"
-                  dataKey="A"
-                  stroke="#6366f1"
-                  fill="#6366f1"
-                  fillOpacity={0.3}
-                  strokeWidth={2}
-                />
-                <Tooltip content={<CustomRadarTooltip />} />
-              </RadarChart>
-            </ResponsiveContainer>
+        <div style={styles.premiumRadarCard}>
+          <div style={styles.premiumRadarHeader}>
+            <div style={styles.premiumRadarTitleSection}>
+              <h3 style={styles.premiumCardTitle}>
+                <span style={styles.premiumCardIcon}>📡</span>
+                확장 메트릭 레이더
+              </h3>
+              <p style={styles.premiumCardSubtitle}>
+                5가지 핵심 지표를 다차원으로 분석합니다
+              </p>
+            </div>
+            <div style={styles.radarSummaryBox}>
+              <div style={styles.radarSummaryIcon}>💡</div>
+              <div style={styles.radarSummaryText}>
+                {(() => {
+                  const avgScore = radarData.reduce((sum, d) => sum + d.A, 0) / radarData.length;
+                  if (avgScore >= 70) return '전체적으로 균형 잡힌 코드 구조입니다. 현재 품질을 유지하세요.';
+                  if (avgScore >= 50) return '일부 지표에서 개선이 필요합니다. 낮은 영역을 집중 개선하세요.';
+                  return '여러 지표에서 개선이 시급합니다. 우선순위를 정해 리팩토링하세요.';
+                })()}
+              </div>
+            </div>
+          </div>
+
+          <div style={styles.premiumRadarContent}>
+            <div style={styles.premiumRadarChartWrapper}>
+              <ResponsiveContainer width="100%" height={380}>
+                <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="70%">
+                  <defs>
+                    <linearGradient id="radarGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#6366f1" stopOpacity={0.8}/>
+                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.3}/>
+                    </linearGradient>
+                  </defs>
+                  <PolarGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+                  <PolarAngleAxis
+                    dataKey="subject"
+                    tick={<CustomAxisTick />}
+                  />
+                  <PolarRadiusAxis
+                    angle={90}
+                    domain={[0, 100]}
+                    tick={{ fill: '#9ca3af', fontSize: 10 }}
+                    axisLine={false}
+                    tickCount={5}
+                  />
+                  <Radar
+                    name="메트릭"
+                    dataKey="A"
+                    stroke="#6366f1"
+                    strokeWidth={2}
+                    fill="url(#radarGradient)"
+                    fillOpacity={0.4}
+                  />
+                  <Tooltip content={<CustomRadarTooltip />} />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         </div>
 
@@ -3301,6 +3655,503 @@ const styles = {
     width: '12px',
     height: '12px',
     borderRadius: '50%',
+  },
+  // Premium Dashboard Styles
+  premiumDashboardGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))',
+    gap: '24px',
+    maxWidth: '1200px',
+    margin: '0 auto 32px',
+  },
+  premiumScoreCard: {
+    background: 'linear-gradient(145deg, #ffffff 0%, #fafbff 100%)',
+    borderRadius: '20px',
+    padding: '20px 24px',
+    boxShadow: '0 4px 24px rgba(99, 102, 241, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
+    border: '1px solid rgba(99, 102, 241, 0.1)',
+    transition: 'all 0.3s ease',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    minHeight: '320px',
+  },
+  premiumMetricsCard: {
+    background: 'linear-gradient(145deg, #ffffff 0%, #fafbff 100%)',
+    borderRadius: '20px',
+    padding: '28px',
+    boxShadow: '0 4px 24px rgba(99, 102, 241, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
+    border: '1px solid rgba(99, 102, 241, 0.1)',
+    transition: 'all 0.3s ease',
+  },
+  premiumCardHeader: {
+    marginBottom: '4px',
+  },
+  premiumCardTitleRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '6px',
+  },
+  premiumCardTitle: {
+    fontSize: '17px',
+    fontWeight: '700',
+    color: '#1f2937',
+    margin: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  premiumCardIcon: {
+    fontSize: '20px',
+  },
+  premiumCardSubtitle: {
+    fontSize: '13px',
+    color: '#6b7280',
+    margin: 0,
+    lineHeight: '1.5',
+  },
+  premiumInfoButton: {
+    padding: '6px 14px',
+    background: 'linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%)',
+    color: '#4b5563',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '12px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+  },
+  premiumMetricsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: '16px',
+  },
+  gaugeWrapper: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    padding: '0',
+  },
+  premiumGaugeContainer: {
+    position: 'relative',
+    width: '160px',
+    height: '160px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'opacity 0.5s ease, transform 0.5s ease',
+  },
+  gaugeScoreCenter: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    textAlign: 'center',
+  },
+  premiumGaugeNumber: {
+    fontSize: '38px',
+    fontWeight: '800',
+    display: 'block',
+    lineHeight: '1',
+    letterSpacing: '-2px',
+    transition: 'color 0.3s ease',
+  },
+  premiumGaugeMax: {
+    fontSize: '13px',
+    color: '#9ca3af',
+    display: 'block',
+    marginTop: '2px',
+    fontWeight: '600',
+    transition: 'color 0.3s ease',
+  },
+  // Risk Meter 스타일
+  riskMeterContainer: {
+    width: '100%',
+    maxWidth: '260px',
+    marginTop: '12px',
+  },
+  riskMeterBar: {
+    position: 'relative',
+    display: 'flex',
+    height: '12px',
+    borderRadius: '6px',
+    overflow: 'visible',
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+  },
+  riskMeterSegment: {
+    flex: 1,
+    height: '100%',
+  },
+  riskMeterPointer: {
+    position: 'absolute',
+    top: '-8px',
+    transform: 'translateX(-50%)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    transition: 'left 1.5s cubic-bezier(0.4, 0, 0.2, 1)',
+    zIndex: 10,
+  },
+  riskMeterArrow: {
+    width: 0,
+    height: 0,
+    borderLeft: '6px solid transparent',
+    borderRight: '6px solid transparent',
+    borderTop: '8px solid #1f2937',
+  },
+  riskMeterPointerLabel: {
+    position: 'absolute',
+    top: '-28px',
+    padding: '3px 8px',
+    borderRadius: '4px',
+    color: '#ffffff',
+    fontSize: '11px',
+    fontWeight: '700',
+    whiteSpace: 'nowrap',
+  },
+  riskMeterLabels: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    marginTop: '8px',
+    padding: '0 2px',
+  },
+  riskMeterLabel: {
+    fontSize: '9px',
+    fontWeight: '500',
+    textAlign: 'center',
+    flex: 1,
+    transition: 'all 0.3s ease',
+  },
+  qualitySummaryText: {
+    marginTop: '14px',
+    fontSize: '13px',
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: '1.4',
+    transition: 'color 0.3s ease',
+  },
+  // 품질 지표 카드 스타일 (재설계)
+  metricCardContainer: {
+    background: '#ffffff',
+    borderRadius: '16px',
+    padding: '20px',
+    border: '1px solid #e5e7eb',
+    transition: 'all 0.2s ease',
+    position: 'relative',
+  },
+  metricCardTop: {
+    position: 'relative',
+    marginBottom: '14px',
+  },
+  metricCardTitleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
+  metricIconBox: {
+    width: '40px',
+    height: '40px',
+    borderRadius: '10px',
+    background: 'linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  metricIconText: {
+    fontSize: '20px',
+  },
+  metricTitleGroup: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  metricCardTitle: {
+    fontSize: '15px',
+    fontWeight: '700',
+    color: '#1f2937',
+  },
+  metricInfoBtn: {
+    width: '18px',
+    height: '18px',
+    borderRadius: '50%',
+    border: '1px solid #d1d5db',
+    background: '#f9fafb',
+    color: '#6b7280',
+    fontSize: '11px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'all 0.2s ease',
+  },
+  metricScoreBox: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '2px',
+  },
+  metricScoreNum: {
+    fontSize: '28px',
+    fontWeight: '800',
+    letterSpacing: '-1px',
+    lineHeight: '1',
+  },
+  metricScoreUnit: {
+    fontSize: '14px',
+    fontWeight: '500',
+    color: '#9ca3af',
+  },
+  metricInfoBtnWrapper: {
+    position: 'relative',
+    display: 'inline-block',
+  },
+  metricTooltipBox: {
+    position: 'absolute',
+    top: '100%',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    marginTop: '8px',
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '12px 14px',
+    borderRadius: '10px',
+    fontSize: '12px',
+    lineHeight: '1.5',
+    width: '260px',
+    zIndex: 9999,
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)',
+    pointerEvents: 'none',
+  },
+  metricTooltipTitle: {
+    fontWeight: '600',
+    marginBottom: '6px',
+    color: '#fbbf24',
+  },
+  metricTooltipContent: {
+    color: '#e5e7eb',
+  },
+  metricDescSection: {
+    marginBottom: '14px',
+    paddingBottom: '14px',
+    borderBottom: '1px solid #f3f4f6',
+  },
+  metricSimpleDesc: {
+    fontSize: '13px',
+    color: '#4b5563',
+    lineHeight: '1.5',
+    margin: '0 0 6px 0',
+  },
+  metricInterpretation: {
+    fontSize: '12px',
+    color: '#9ca3af',
+    lineHeight: '1.4',
+    margin: 0,
+    fontStyle: 'italic',
+  },
+  metricProgressSection: {
+    marginBottom: '14px',
+  },
+  metricProgressTrack: {
+    width: '100%',
+    height: '8px',
+    background: '#f1f5f9',
+    borderRadius: '4px',
+    overflow: 'hidden',
+    marginBottom: '6px',
+  },
+  metricProgressFill: {
+    height: '100%',
+    borderRadius: '4px',
+    transition: 'width 1.2s cubic-bezier(0.4, 0, 0.2, 1)',
+  },
+  metricProgressLabels: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '0 2px',
+  },
+  metricProgressLabel: {
+    fontSize: '10px',
+    color: '#9ca3af',
+    fontWeight: '500',
+  },
+  metricStatusBox: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '10px 12px',
+    borderRadius: '8px',
+    border: '1px solid',
+  },
+  metricStatusLabel: {
+    fontSize: '12px',
+    fontWeight: '700',
+    flexShrink: 0,
+  },
+  metricStatusText: {
+    fontSize: '12px',
+    color: '#4b5563',
+    lineHeight: '1.4',
+  },
+  // 품질 지표 분석 섹션 스타일
+  metricsAnalysisSection: {
+    maxWidth: '1200px',
+    margin: '0 auto 32px',
+    background: 'linear-gradient(145deg, #ffffff 0%, #fafbff 100%)',
+    borderRadius: '20px',
+    padding: '28px',
+    boxShadow: '0 4px 24px rgba(99, 102, 241, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
+    border: '1px solid rgba(99, 102, 241, 0.1)',
+  },
+  metricsAnalysisHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: '24px',
+    flexWrap: 'wrap',
+    gap: '16px',
+  },
+  metricsAnalysisTitle: {
+    fontSize: '18px',
+    fontWeight: '700',
+    color: '#1f2937',
+    margin: '0 0 6px 0',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  metricsAnalysisSubtitle: {
+    fontSize: '13px',
+    color: '#6b7280',
+    margin: 0,
+  },
+  metricsLegend: {
+    display: 'flex',
+    gap: '16px',
+    flexWrap: 'wrap',
+  },
+  metricsLegendItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    fontSize: '12px',
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  metricsLegendDot: {
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+  },
+  metricsCardsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: '20px',
+  },
+  // Premium Radar Card Styles
+  premiumRadarCard: {
+    maxWidth: '1200px',
+    margin: '0 auto 32px',
+    background: 'linear-gradient(145deg, #ffffff 0%, #fafbff 100%)',
+    borderRadius: '20px',
+    padding: '28px',
+    boxShadow: '0 4px 24px rgba(99, 102, 241, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04)',
+    border: '1px solid rgba(99, 102, 241, 0.1)',
+    overflow: 'visible',
+  },
+  premiumRadarHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: '20px',
+    flexWrap: 'wrap',
+    gap: '16px',
+  },
+  premiumRadarTitleSection: {
+    flex: 1,
+    minWidth: '200px',
+  },
+  radarSummaryBox: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '12px',
+    background: 'linear-gradient(135deg, #fef3c7 0%, #fef9c3 100%)',
+    padding: '14px 18px',
+    borderRadius: '12px',
+    border: '1px solid #fcd34d',
+    maxWidth: '320px',
+  },
+  radarSummaryIcon: {
+    fontSize: '20px',
+    flexShrink: 0,
+  },
+  radarSummaryText: {
+    fontSize: '13px',
+    color: '#92400e',
+    lineHeight: '1.5',
+    fontWeight: '500',
+  },
+  premiumRadarContent: {
+    display: 'flex',
+    justifyContent: 'center',
+  },
+  premiumRadarChartWrapper: {
+    width: '100%',
+    maxWidth: '500px',
+    padding: '10px',
+    overflow: 'visible',
+  },
+  premiumRadarTooltip: {
+    background: 'linear-gradient(135deg, #1f2937 0%, #111827 100%)',
+    color: '#ffffff',
+    padding: '16px 18px',
+    borderRadius: '12px',
+    fontSize: '13px',
+    boxShadow: '0 10px 40px rgba(0, 0, 0, 0.3)',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    minWidth: '200px',
+  },
+  radarTooltipHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    marginBottom: '12px',
+    paddingBottom: '10px',
+    borderBottom: '1px solid rgba(255, 255, 255, 0.15)',
+  },
+  radarTooltipIcon: {
+    fontSize: '18px',
+  },
+  radarTooltipTitle: {
+    fontSize: '15px',
+    fontWeight: '700',
+    margin: 0,
+  },
+  radarTooltipScore: {
+    marginBottom: '10px',
+  },
+  radarTooltipScoreValue: {
+    fontSize: '32px',
+    fontWeight: '800',
+    letterSpacing: '-1px',
+  },
+  radarTooltipScoreUnit: {
+    fontSize: '14px',
+    color: '#9ca3af',
+    marginLeft: '4px',
+  },
+  radarTooltipDescription: {
+    fontSize: '12px',
+    color: '#d1d5db',
+    lineHeight: '1.5',
+    margin: 0,
   },
 };
 
