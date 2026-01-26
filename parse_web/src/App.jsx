@@ -573,40 +573,40 @@ const CustomAxisTick = ({ payload, x, y, cx, cy }) => {
 };
 
 // ============================================
-// 함수 의존성 다이어그램 (모든 함수 포함)
+// Fan-in / Fan-out 다이어그램 (모든 함수 포함)
 // ============================================
 const DependencyDiagram = ({ dependencyAnalysis }) => {
   const [hoveredNode, setHoveredNode] = useState(null);
   const [hoveredEdge, setHoveredEdge] = useState(null);
-  
+
   const { allFunctions, dependencies, functionTypes } = dependencyAnalysis;
-  
+
   // 모든 함수 수집 (의존성에서 참조되는 것 포함)
   const allNodes = new Set(allFunctions || []);
   dependencies.forEach(dep => {
     allNodes.add(dep.from);
     allNodes.add(dep.to);
   });
-  
+
   const nodeList = Array.from(allNodes);
-  
+
   if (nodeList.length === 0) {
     return (
       <div style={styles.emptyDiagram}>
         <p>📭 분석된 함수가 없습니다.</p>
         <p style={{ fontSize: '13px', color: '#9ca3af' }}>
-          JavaScript/React 코드를 분석하면 함수 의존성 다이어그램이 생성됩니다.
+          JavaScript/React 코드를 분석하면 Fan-in/Fan-out 다이어그램이 생성됩니다.
         </p>
       </div>
     );
   }
 
-  // 각 노드의 연결 수 계산 (중심성)
+  // 각 노드의 연결 수 계산 (Fan-in / Fan-out)
   const nodeConnections = {};
   nodeList.forEach(node => {
     nodeConnections[node] = { in: 0, out: 0, total: 0 };
   });
-  
+
   dependencies.forEach(dep => {
     if (nodeConnections[dep.from]) {
       nodeConnections[dep.from].out += dep.count;
@@ -618,38 +618,40 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
     }
   });
 
-  // 노드 위치 계산
-  const svgWidth = 850;
-  const svgHeight = Math.max(500, nodeList.length * 70);
+  // 노드 위치 계산 - 개선된 레이아웃
+  const svgWidth = 900;
+  const svgHeight = Math.max(550, nodeList.length * 80);
+  const diagramOffsetY = 60; // 상단 여백 확보
   const centerX = svgWidth / 2;
-  const centerY = svgHeight / 2;
-  
+  const centerY = (svgHeight / 2) + diagramOffsetY;
+
   // 연결이 많은 노드를 중앙에 배치
-  const sortedNodes = [...nodeList].sort((a, b) => 
+  const sortedNodes = [...nodeList].sort((a, b) =>
     nodeConnections[b].total - nodeConnections[a].total
   );
-  
+
   const nodePositions = {};
-  const nodeWidth = 130;
-  const nodeHeight = 44;
-  
-  // 원형 레이아웃 + 중심성 기반 배치
+  const baseNodeWidth = 140;
+  const baseNodeHeight = 50;
+
+  // 개선된 원형 레이아웃 - 간격 증가
   sortedNodes.forEach((node, index) => {
     if (index === 0 && sortedNodes.length > 1) {
-      // 가장 연결이 많은 노드는 중앙에
+      // 가장 연결이 많은 노드는 중앙에 (상단 여백 적용)
       nodePositions[node] = { x: centerX, y: centerY };
     } else if (sortedNodes.length === 1) {
       // 노드가 1개면 중앙에
       nodePositions[node] = { x: centerX, y: centerY };
     } else {
-      // 나머지는 원형으로 배치
+      // 나머지는 원형으로 배치 - 간격 증가
       const adjustedIndex = index - 1;
-      const layer = Math.floor(adjustedIndex / 6) + 1;
-      const posInLayer = adjustedIndex % 6;
-      const nodesInThisLayer = Math.min(6, sortedNodes.length - 1 - (layer - 1) * 6);
+      const nodesPerLayer = 5; // 레이어당 노드 수 감소로 간격 증가
+      const layer = Math.floor(adjustedIndex / nodesPerLayer) + 1;
+      const posInLayer = adjustedIndex % nodesPerLayer;
+      const nodesInThisLayer = Math.min(nodesPerLayer, sortedNodes.length - 1 - (layer - 1) * nodesPerLayer);
       const angle = (posInLayer / nodesInThisLayer) * 2 * Math.PI - Math.PI / 2;
-      const radius = 140 + layer * 110;
-      
+      const radius = 180 + layer * 140; // 반경 증가
+
       nodePositions[node] = {
         x: centerX + radius * Math.cos(angle),
         y: centerY + radius * Math.sin(angle)
@@ -660,36 +662,36 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
   // 함수 타입에 따른 노드 스타일
   const getNodeStyle = (node) => {
     const type = functionTypes?.[node] || (/^[A-Z]/.test(node) ? 'component' : 'helper');
-    
+
     switch(type) {
       case 'component':
-        return { 
-          fill: '#dbeafe', 
-          stroke: '#3b82f6', 
+        return {
+          fill: '#dbeafe',
+          stroke: '#3b82f6',
           text: '#1e40af',
           icon: '⚛️',
           label: 'Component'
         };
       case 'handler':
-        return { 
-          fill: '#fef3c7', 
-          stroke: '#f59e0b', 
+        return {
+          fill: '#fef3c7',
+          stroke: '#f59e0b',
           text: '#92400e',
           icon: '🎯',
           label: 'Handler'
         };
       case 'helper':
-        return { 
-          fill: '#dcfce7', 
-          stroke: '#22c55e', 
+        return {
+          fill: '#dcfce7',
+          stroke: '#22c55e',
           text: '#166534',
           icon: '🔧',
           label: 'Helper'
         };
       default:
-        return { 
-          fill: '#f3f4f6', 
-          stroke: '#9ca3af', 
+        return {
+          fill: '#f3f4f6',
+          stroke: '#9ca3af',
           text: '#374151',
           icon: '📦',
           label: 'External'
@@ -700,50 +702,49 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
   // 노드 크기 (연결 수에 따라)
   const getNodeSize = (node) => {
     const connections = nodeConnections[node]?.total || 0;
-    const baseWidth = 130;
-    const baseHeight = 44;
-    const scale = Math.min(1.4, 1 + connections * 0.08);
-    return { width: baseWidth * scale, height: baseHeight * scale };
+    const scale = Math.min(1.3, 1 + connections * 0.06);
+    return { width: baseNodeWidth * scale, height: baseNodeHeight * scale };
   };
 
-  // 화살표 경로 계산
-  const getEdgePath = (from, to) => {
+  // 화살표 경로 계산 - 곡선 개선
+  const getEdgePath = (from, to, edgeIndex, totalEdgesBetween) => {
     const fromPos = nodePositions[from];
     const toPos = nodePositions[to];
-    
+
     if (!fromPos || !toPos) return null;
-    
+
     const fromSize = getNodeSize(from);
     const toSize = getNodeSize(to);
-    
+
     // 방향 벡터
     const dx = toPos.x - fromPos.x;
     const dy = toPos.y - fromPos.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    
+
     if (dist === 0) return null;
-    
+
     const nx = dx / dist;
     const ny = dy / dist;
-    
-    // 시작점과 끝점 (노드 테두리)
-    const startX = fromPos.x + nx * (fromSize.width / 2 + 5);
-    const startY = fromPos.y + ny * (fromSize.height / 2 + 5);
-    const endX = toPos.x - nx * (toSize.width / 2 + 15);
-    const endY = toPos.y - ny * (toSize.height / 2 + 15);
-    
-    // 곡선 제어점
+
+    // 시작점과 끝점 (노드 테두리에서 충분히 떨어지게)
+    const startX = fromPos.x + nx * (fromSize.width / 2 + 8);
+    const startY = fromPos.y + ny * (fromSize.height / 2 + 8);
+    const endX = toPos.x - nx * (toSize.width / 2 + 18);
+    const endY = toPos.y - ny * (toSize.height / 2 + 18);
+
+    // 곡선 제어점 - 더 부드러운 곡선
     const midX = (startX + endX) / 2;
     const midY = (startY + endY) / 2;
-    
-    // 약간의 곡선 추가
-    const perpX = -ny * 30;
-    const perpY = nx * 30;
-    
+
+    // 곡선 오프셋 계산 (거리에 비례)
+    const curveOffset = Math.min(50, dist * 0.15);
+    const perpX = -ny * curveOffset;
+    const perpY = nx * curveOffset;
+
     return {
       path: `M ${startX} ${startY} Q ${midX + perpX} ${midY + perpY} ${endX} ${endY}`,
-      labelX: midX + perpX * 0.6,
-      labelY: midY + perpY * 0.6,
+      labelX: midX + perpX * 0.7,
+      labelY: midY + perpY * 0.7,
       startX, startY, endX, endY
     };
   };
@@ -752,32 +753,32 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
   const getSelfLoopPath = (node) => {
     const pos = nodePositions[node];
     const size = getNodeSize(node);
-    
+
     if (!pos) return null;
-    
+
     const x = pos.x + size.width / 2;
     const y = pos.y - size.height / 2;
-    
+
     return {
-      path: `M ${x} ${y} C ${x + 60} ${y - 50} ${x + 60} ${y + 50} ${x} ${y + size.height}`,
-      labelX: x + 65,
-      labelY: y + 10
+      path: `M ${x} ${y} C ${x + 70} ${y - 60} ${x + 70} ${y + 60} ${x} ${y + size.height}`,
+      labelX: x + 75,
+      labelY: y + 15
     };
   };
 
   const renderEdge = (dep, idx) => {
     const isSelfLoop = dep.from === dep.to;
-    const edgeData = isSelfLoop 
+    const edgeData = isSelfLoop
       ? getSelfLoopPath(dep.from)
       : getEdgePath(dep.from, dep.to);
-    
+
     if (!edgeData) return null;
-    
+
     const isHovered = hoveredEdge === idx;
-    const strokeWidth = Math.min(4, 1.5 + dep.count * 0.5);
-    
+    const strokeWidth = Math.min(3.5, 1.5 + dep.count * 0.4);
+
     return (
-      <g 
+      <g
         key={idx}
         onMouseEnter={() => setHoveredEdge(idx)}
         onMouseLeave={() => setHoveredEdge(null)}
@@ -794,7 +795,7 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
         {/* 의존 횟수 표시 */}
         <g transform={`translate(${edgeData.labelX}, ${edgeData.labelY})`}>
           <circle
-            r="14"
+            r="13"
             fill={isHovered ? '#6366f1' : '#ffffff'}
             stroke={isHovered ? '#4f46e5' : '#94a3b8'}
             strokeWidth="2"
@@ -802,7 +803,7 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
           <text
             textAnchor="middle"
             dominantBaseline="middle"
-            fontSize="11"
+            fontSize="10"
             fontWeight="700"
             fill={isHovered ? '#ffffff' : '#475569'}
           >
@@ -811,16 +812,25 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
         </g>
         {/* 호버 툴팁 */}
         {isHovered && (
-          <foreignObject 
-            x={edgeData.labelX + 25} 
-            y={edgeData.labelY - 20} 
-            width="200" 
-            height="60"
+          <foreignObject
+            x={edgeData.labelX + 20}
+            y={edgeData.labelY - 35}
+            width="1"
+            height="1"
+            style={{ overflow: 'visible' }}
           >
-            <div style={styles.diagramTooltip}>
-              <strong>{dep.from}</strong> → <strong>{dep.to}</strong>
-              <br />
-              호출 횟수: {dep.count}회
+            <div style={styles.edgeTooltip}>
+              <div style={styles.edgeTooltipRow}>
+                <strong>{dep.from}</strong>
+                <span style={styles.edgeTooltipArrow}>→</span>
+                <strong>{dep.to}</strong>
+              </div>
+              <div style={styles.edgeTooltipInfo}>
+                호출 횟수: <span style={styles.edgeTooltipCount}>{dep.count}회</span>
+              </div>
+              <div style={styles.edgeTooltipMeta}>
+                Fan-out: {dep.from} | Fan-in: {dep.to}
+              </div>
             </div>
           </foreignObject>
         )}
@@ -834,11 +844,11 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
     const style = getNodeStyle(node);
     const conn = nodeConnections[node];
     const isHovered = hoveredNode === node;
-    
+
     if (!pos) return null;
-    
+
     return (
-      <g 
+      <g
         key={node}
         onMouseEnter={() => setHoveredNode(node)}
         onMouseLeave={() => setHoveredNode(null)}
@@ -851,8 +861,8 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
           y={-size.height / 2 + 3}
           width={size.width}
           height={size.height}
-          rx="10"
-          fill="rgba(0,0,0,0.1)"
+          rx="12"
+          fill="rgba(0,0,0,0.08)"
         />
         {/* 노드 배경 */}
         <rect
@@ -860,7 +870,7 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
           y={-size.height / 2}
           width={size.width}
           height={size.height}
-          rx="10"
+          rx="12"
           fill={isHovered ? style.stroke : style.fill}
           stroke={style.stroke}
           strokeWidth={isHovered ? 3 : 2}
@@ -868,8 +878,8 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
         />
         {/* 아이콘 */}
         <text
-          x={-size.width / 2 + 12}
-          y={2}
+          x={-size.width / 2 + 14}
+          y={0}
           fontSize="14"
           dominantBaseline="middle"
         >
@@ -877,57 +887,78 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
         </text>
         {/* 함수 이름 */}
         <text
-          x={5}
-          y={0}
+          x={8}
+          y={-4}
           textAnchor="middle"
           dominantBaseline="middle"
           fontSize="12"
           fontWeight="600"
           fill={isHovered ? '#ffffff' : style.text}
         >
-          {node.length > 14 ? node.slice(0, 12) + '...' : node}
+          {node.length > 12 ? node.slice(0, 10) + '...' : node}
         </text>
         {/* 타입 라벨 */}
         <text
-          x={5}
-          y={size.height / 2 - 10}
+          x={8}
+          y={size.height / 2 - 12}
           textAnchor="middle"
           fontSize="9"
           fill={isHovered ? 'rgba(255,255,255,0.8)' : style.stroke}
         >
           {style.label}
         </text>
-        {/* 연결 수 뱃지 */}
-        {conn && conn.total > 0 && (
-          <g transform={`translate(${size.width / 2 - 8}, ${-size.height / 2 - 8})`}>
-            <circle r="12" fill="#ef4444" stroke="#ffffff" strokeWidth="2" />
+        {/* Fan-in 뱃지 (좌상단 - 파란색) */}
+        {conn && conn.in > 0 && (
+          <g transform={`translate(${-size.width / 2 + 8}, ${-size.height / 2 - 8})`}>
+            <circle r="11" fill="#3b82f6" stroke="#ffffff" strokeWidth="2" />
             <text
               textAnchor="middle"
               dominantBaseline="middle"
-              fontSize="10"
+              fontSize="9"
               fontWeight="bold"
               fill="#ffffff"
             >
-              {conn.total}
+              {conn.in}
+            </text>
+          </g>
+        )}
+        {/* Fan-out 뱃지 (우상단 - 주황색) */}
+        {conn && conn.out > 0 && (
+          <g transform={`translate(${size.width / 2 - 8}, ${-size.height / 2 - 8})`}>
+            <circle r="11" fill="#f59e0b" stroke="#ffffff" strokeWidth="2" />
+            <text
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fontSize="9"
+              fontWeight="bold"
+              fill="#ffffff"
+            >
+              {conn.out}
             </text>
           </g>
         )}
         {/* 호버 툴팁 */}
         {isHovered && (
-          <foreignObject 
-            x={size.width / 2 + 15} 
-            y={-40} 
-            width="180" 
-            height="100"
+          <foreignObject
+            x={size.width / 2 + 10}
+            y={-55}
+            width="1"
+            height="1"
+            style={{ overflow: 'visible' }}
           >
-            <div style={styles.diagramTooltip}>
-              <strong>{node}</strong>
-              <br />
-              타입: {style.label}
-              <br />
-              호출됨 (In): {conn?.in || 0}회
-              <br />
-              호출함 (Out): {conn?.out || 0}회
+            <div style={styles.nodeTooltip}>
+              <div style={styles.nodeTooltipHeader}>{node}</div>
+              <div style={styles.nodeTooltipType}>타입: {style.label}</div>
+              <div style={styles.nodeTooltipStats}>
+                <div style={styles.nodeTooltipFanIn}>
+                  <span style={styles.fanInIcon}>▶</span>
+                  Fan-in (호출됨): {conn?.in || 0}회
+                </div>
+                <div style={styles.nodeTooltipFanOut}>
+                  <span style={styles.fanOutIcon}>◀</span>
+                  Fan-out (호출함): {conn?.out || 0}회
+                </div>
+              </div>
             </div>
           </foreignObject>
         )}
@@ -935,8 +966,61 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
     );
   };
 
+  // Fan-in / Fan-out 통계 계산
+  const maxFanIn = Math.max(...nodeList.map(n => nodeConnections[n]?.in || 0));
+  const maxFanOut = Math.max(...nodeList.map(n => nodeConnections[n]?.out || 0));
+  const highFanInNode = nodeList.find(n => nodeConnections[n]?.in === maxFanIn) || '-';
+  const highFanOutNode = nodeList.find(n => nodeConnections[n]?.out === maxFanOut) || '-';
+
   return (
     <div style={styles.diagramContainer}>
+      {/* Fan-in / Fan-out 개념 설명 영역 */}
+      <div style={styles.fanInOutExplanation}>
+        <div style={styles.explanationHeader}>
+          <span style={styles.explanationIcon}>📖</span>
+          <span style={styles.explanationTitle}>Fan-in / Fan-out 개념 이해하기</span>
+        </div>
+        <div style={styles.explanationContent}>
+          <div style={styles.explanationItem}>
+            <div style={styles.explanationBadge}>
+              <span style={{ ...styles.explanationDot, background: '#3b82f6' }}></span>
+              <strong>Fan-in</strong>
+            </div>
+            <p style={styles.explanationText}>
+              하나의 함수로 유입되는 호출의 수입니다.<br/>
+              <span style={styles.highlightText}>Fan-in이 높을수록 재사용성이 높은 함수</span>입니다.
+            </p>
+            <div style={styles.realLifeExample}>
+              <span style={styles.exampleLabel}>🏦 실생활 예시</span>
+              <p style={styles.exampleText}>
+                은행의 공용 창구처럼, 여러 고객이 하나의 창구를 이용하는 상황과 같습니다.
+                많은 곳에서 호출되는 핵심 기능일수록 Fan-in이 높아집니다.
+              </p>
+            </div>
+          </div>
+          <div style={styles.explanationItem}>
+            <div style={styles.explanationBadge}>
+              <span style={{ ...styles.explanationDot, background: '#f59e0b' }}></span>
+              <strong>Fan-out</strong>
+            </div>
+            <p style={styles.explanationText}>
+              하나의 함수에서 호출하는 다른 함수의 수입니다.<br/>
+              <span style={styles.highlightText}>Fan-out이 높을수록 복잡도가 높고 변경 영향 범위가 큽니다.</span>
+            </p>
+            <div style={styles.realLifeExample}>
+              <span style={styles.exampleLabel}>👔 실생활 예시</span>
+              <p style={styles.exampleText}>
+                팀장이 여러 팀원에게 동시에 업무를 지시하는 상황과 같습니다.
+                지시 대상이 많을수록 관리가 복잡해지고, 변경 시 영향 범위가 넓어집니다.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div style={styles.explanationTip}>
+          💡 <strong>Tip:</strong> 노드 좌상단 파란 뱃지 = Fan-in, 우상단 주황 뱃지 = Fan-out
+        </div>
+      </div>
+
       <svg width={svgWidth} height={svgHeight} style={{ overflow: 'visible' }}>
         <defs>
           <marker
@@ -950,34 +1034,49 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
             <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
           </marker>
         </defs>
-        
+
         {/* 엣지 먼저 렌더링 */}
         {dependencies.map(renderEdge)}
-        
+
         {/* 노드 렌더링 */}
         {nodeList.map(renderNode)}
       </svg>
-      
+
       {/* 범례 */}
       <div style={styles.diagramLegend}>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendBox, background: '#dbeafe', border: '2px solid #3b82f6' }}></div>
-          <span>⚛️ Component (컴포넌트)</span>
+        <div style={styles.legendSection}>
+          <span style={styles.legendSectionTitle}>노드 타입</span>
+          <div style={styles.legendItems}>
+            <div style={styles.legendItem}>
+              <div style={{ ...styles.legendBox, background: '#dbeafe', border: '2px solid #3b82f6' }}></div>
+              <span>⚛️ Component</span>
+            </div>
+            <div style={styles.legendItem}>
+              <div style={{ ...styles.legendBox, background: '#fef3c7', border: '2px solid #f59e0b' }}></div>
+              <span>🎯 Handler</span>
+            </div>
+            <div style={styles.legendItem}>
+              <div style={{ ...styles.legendBox, background: '#dcfce7', border: '2px solid #22c55e' }}></div>
+              <span>🔧 Helper</span>
+            </div>
+          </div>
         </div>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendBox, background: '#fef3c7', border: '2px solid #f59e0b' }}></div>
-          <span>🎯 Handler (이벤트 핸들러)</span>
-        </div>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendBox, background: '#dcfce7', border: '2px solid #22c55e' }}></div>
-          <span>🔧 Helper (헬퍼 함수)</span>
-        </div>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendCircle, background: '#ef4444' }}></div>
-          <span>총 연결 수</span>
+        <div style={styles.legendDivider}></div>
+        <div style={styles.legendSection}>
+          <span style={styles.legendSectionTitle}>뱃지</span>
+          <div style={styles.legendItems}>
+            <div style={styles.legendItem}>
+              <div style={{ ...styles.legendCircle, background: '#3b82f6' }}></div>
+              <span>Fan-in (좌상단)</span>
+            </div>
+            <div style={styles.legendItem}>
+              <div style={{ ...styles.legendCircle, background: '#f59e0b' }}></div>
+              <span>Fan-out (우상단)</span>
+            </div>
+          </div>
         </div>
       </div>
-      
+
       {/* 통계 요약 */}
       <div style={styles.dependencyStats}>
         <div style={styles.statItem}>
@@ -995,16 +1094,18 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
           <span style={styles.statLabel}>의존 관계</span>
         </div>
         <div style={styles.statItem}>
-          <span style={styles.statValue}>
-            {dependencies.reduce((sum, d) => sum + d.count, 0)}
+          <span style={{...styles.statValue, color: '#3b82f6'}}>
+            {maxFanIn}
           </span>
-          <span style={styles.statLabel}>총 호출 횟수</span>
+          <span style={styles.statLabel}>최대 Fan-in</span>
+          <span style={styles.statSubLabel}>{highFanInNode}</span>
         </div>
         <div style={styles.statItem}>
-          <span style={{...styles.statValue, fontSize: '16px'}}>
-            {sortedNodes[0] || '-'}
+          <span style={{...styles.statValue, color: '#f59e0b'}}>
+            {maxFanOut}
           </span>
-          <span style={styles.statLabel}>중심 함수</span>
+          <span style={styles.statLabel}>최대 Fan-out</span>
+          <span style={styles.statSubLabel}>{highFanOutNode}</span>
         </div>
       </div>
     </div>
@@ -1264,9 +1365,13 @@ const App = () => {
         <div style={styles.analyzingBox}>
           <div style={styles.spinner}>
             <div style={styles.spinnerRing}></div>
-            <span style={styles.spinnerIcon}>⚛️</span>
+            <img
+              src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/react/react-original.svg"
+              alt="React"
+              style={styles.spinnerReactIcon}
+            />
           </div>
-          
+
           <h2 style={styles.analyzingTitle}>코드 분석 중...</h2>
           <p style={styles.analyzingDesc}>{currentStep}</p>
           
@@ -1410,17 +1515,17 @@ const App = () => {
           </div>
         </div>
 
-        {/* 함수 의존성 다이어그램 */}
+        {/* Fan-in / Fan-out 다이어그램 */}
         <div style={styles.stateDiagramCard}>
           <h3 style={styles.chartTitle}>
-            <span style={styles.chartIcon}>🔗</span> 상태 다이어그램 (State Diagram)
+            <span style={styles.chartIcon}>🔗</span> Fan-in / Fan-out 다이어그램
           </h3>
           <p style={styles.chartHint}>
-            * 각 노드와 화살표에 마우스를 올려 상세 정보를 확인하세요. 
+            * 각 노드와 화살표에 마우스를 올려 상세 정보를 확인하세요.
             화살표는 A → B (A가 B를 호출)를 의미하며, 숫자는 호출 횟수입니다.
           </p>
-          <DependencyDiagram 
-            dependencyAnalysis={results.summary.dependencyAnalysis} 
+          <DependencyDiagram
+            dependencyAnalysis={results.summary.dependencyAnalysis}
           />
         </div>
 
@@ -1634,6 +1739,14 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: '24px',
+  },
+  spinnerReactIcon: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: '32px',
+    height: '32px',
   },
   analyzingTitle: {
     fontSize: '20px',
@@ -1925,15 +2038,121 @@ const styles = {
   },
   diagramContainer: {
     padding: '20px',
-    minWidth: '850px',
+    minWidth: '900px',
+  },
+  fanInOutExplanation: {
+    background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)',
+    border: '1px solid #e2e8f0',
+    borderRadius: '12px',
+    padding: '20px',
+    marginBottom: '24px',
+  },
+  explanationHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    marginBottom: '16px',
+  },
+  explanationIcon: {
+    fontSize: '20px',
+  },
+  explanationTitle: {
+    fontSize: '15px',
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  explanationContent: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: '16px',
+    marginBottom: '12px',
+  },
+  explanationItem: {
+    background: '#ffffff',
+    borderRadius: '8px',
+    padding: '14px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+  },
+  explanationBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    marginBottom: '8px',
+    fontSize: '14px',
+    color: '#334155',
+  },
+  explanationDot: {
+    width: '12px',
+    height: '12px',
+    borderRadius: '50%',
+  },
+  explanationText: {
+    fontSize: '13px',
+    color: '#64748b',
+    lineHeight: '1.6',
+    margin: '0 0 12px 0',
+  },
+  highlightText: {
+    color: '#475569',
+    fontWeight: '500',
+  },
+  realLifeExample: {
+    background: '#f8fafc',
+    borderRadius: '6px',
+    padding: '10px 12px',
+    borderLeft: '3px solid #cbd5e1',
+  },
+  exampleLabel: {
+    fontSize: '11px',
+    fontWeight: '600',
+    color: '#64748b',
+    display: 'block',
+    marginBottom: '4px',
+  },
+  exampleText: {
+    fontSize: '12px',
+    color: '#64748b',
+    lineHeight: '1.5',
+    margin: 0,
+  },
+  explanationTip: {
+    fontSize: '12px',
+    color: '#64748b',
+    background: '#fefce8',
+    padding: '10px 14px',
+    borderRadius: '6px',
+    border: '1px solid #fef08a',
   },
   diagramLegend: {
     display: 'flex',
-    gap: '24px',
-    marginTop: '20px',
-    paddingTop: '16px',
+    gap: '32px',
+    marginTop: '24px',
+    paddingTop: '20px',
     borderTop: '1px solid #e5e7eb',
     flexWrap: 'wrap',
+    alignItems: 'flex-start',
+  },
+  legendSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+  },
+  legendSectionTitle: {
+    fontSize: '11px',
+    fontWeight: '600',
+    color: '#9ca3af',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+  },
+  legendItems: {
+    display: 'flex',
+    gap: '16px',
+    flexWrap: 'wrap',
+  },
+  legendDivider: {
+    width: '1px',
+    background: '#e5e7eb',
+    alignSelf: 'stretch',
   },
   legendItem: {
     display: 'flex',
@@ -1967,6 +2186,91 @@ const styles = {
     boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
     whiteSpace: 'pre-line',
   },
+  edgeTooltip: {
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '12px 16px',
+    borderRadius: '10px',
+    fontSize: '12px',
+    lineHeight: '1.6',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)',
+    whiteSpace: 'nowrap',
+    minWidth: '180px',
+    maxWidth: '280px',
+  },
+  edgeTooltipRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    marginBottom: '8px',
+    fontSize: '13px',
+  },
+  edgeTooltipArrow: {
+    color: '#6366f1',
+    fontWeight: '600',
+  },
+  edgeTooltipInfo: {
+    marginBottom: '6px',
+    color: '#e5e7eb',
+  },
+  edgeTooltipCount: {
+    color: '#a5b4fc',
+    fontWeight: '600',
+  },
+  edgeTooltipMeta: {
+    fontSize: '10px',
+    color: '#9ca3af',
+    paddingTop: '6px',
+    borderTop: '1px solid #374151',
+  },
+  nodeTooltip: {
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '14px 16px',
+    borderRadius: '10px',
+    fontSize: '12px',
+    lineHeight: '1.5',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)',
+    whiteSpace: 'nowrap',
+    minWidth: '200px',
+    maxWidth: '300px',
+  },
+  nodeTooltipHeader: {
+    fontSize: '14px',
+    fontWeight: '600',
+    marginBottom: '6px',
+    paddingBottom: '6px',
+    borderBottom: '1px solid #374151',
+  },
+  nodeTooltipType: {
+    color: '#d1d5db',
+    marginBottom: '10px',
+  },
+  nodeTooltipStats: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
+  nodeTooltipFanIn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    color: '#93c5fd',
+  },
+  nodeTooltipFanOut: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    color: '#fcd34d',
+  },
+  fanInIcon: {
+    color: '#3b82f6',
+    fontWeight: '600',
+  },
+  fanOutIcon: {
+    color: '#f59e0b',
+    fontWeight: '600',
+  },
   emptyDiagram: {
     textAlign: 'center',
     padding: '40px',
@@ -1995,6 +2299,15 @@ const styles = {
   statLabel: {
     fontSize: '12px',
     color: '#6b7280',
+  },
+  statSubLabel: {
+    fontSize: '10px',
+    color: '#9ca3af',
+    marginTop: '2px',
+    maxWidth: '80px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   },
   filesSection: {
     maxWidth: '1200px',
