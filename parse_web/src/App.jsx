@@ -47,6 +47,10 @@ const analyzeCode = (code, filename) => {
         jsxUsages: {},
         functionCalls: {},
         importedModules: [],
+      },
+      // 응집도 분석을 위한 구조
+      cohesionAnalysis: {
+        components: [], // 각 컴포넌트/클래스의 응집도 정보
       }
     };
 
@@ -54,6 +58,12 @@ const analyzeCode = (code, filename) => {
     const functionDependencies = {};
     const allDefinedFunctions = new Set();
     const functionTypes = {}; // 함수 타입 저장 (component, handler, helper)
+
+    // 응집도 분석을 위한 데이터 구조
+    const componentMethods = {}; // 컴포넌트별 내부 메서드
+    const methodSharedState = {}; // 메서드별 사용하는 상태/변수
+    const methodCalls = {}; // 메서드 간 호출 관계
+    let currentComponent = null;
 
     const traverse = (node, depth = 0, parentFunction = null) => {
       if (!node || typeof node !== 'object') return;
@@ -66,29 +76,44 @@ const analyzeCode = (code, filename) => {
         analysis.functions.push(funcName);
         analysis.metrics.wmc++;
         allDefinedFunctions.add(funcName);
-        
+
         // 함수 타입 분류
         if (/^[A-Z]/.test(funcName)) {
           analysis.components.push(funcName);
           analysis.dependencyAnalysis.components.push(funcName);
           functionTypes[funcName] = 'component';
+          // 응집도 분석: 컴포넌트 등록
+          currentComponent = funcName;
+          componentMethods[funcName] = [];
         } else if (/^(handle|on)[A-Z]/.test(funcName)) {
           analysis.eventHandlers.push(funcName);
           functionTypes[funcName] = 'handler';
+          // 응집도 분석: 현재 컴포넌트의 메서드로 등록
+          if (currentComponent && componentMethods[currentComponent]) {
+            componentMethods[currentComponent].push(funcName);
+            methodSharedState[funcName] = new Set();
+            methodCalls[funcName] = new Set();
+          }
         } else {
           functionTypes[funcName] = 'helper';
+          // 응집도 분석: 현재 컴포넌트의 메서드로 등록
+          if (currentComponent && componentMethods[currentComponent]) {
+            componentMethods[currentComponent].push(funcName);
+            methodSharedState[funcName] = new Set();
+            methodCalls[funcName] = new Set();
+          }
         }
-        
+
         analysis.dependencyAnalysis.allFunctions.push(funcName);
-        
+
         if (!functionDependencies[funcName]) {
           functionDependencies[funcName] = {};
         }
-        
+
         // 이 함수 내부를 순회할 때 현재 함수 컨텍스트 설정
         const previousFunction = currentFunction;
         currentFunction = funcName;
-        
+
         for (const key in node) {
           if (key === 'loc' || key === 'range' || key === 'start' || key === 'end' || key === 'id') continue;
           const child = node[key];
@@ -98,43 +123,58 @@ const analyzeCode = (code, filename) => {
             traverse(child, depth + 1, funcName);
           }
         }
-        
+
         currentFunction = previousFunction;
         return;
       }
 
       // 변수 선언자 (화살표 함수, 함수 표현식)
       if (node.type === 'VariableDeclarator') {
-        if (node.init?.type === 'ArrowFunctionExpression' || 
+        if (node.init?.type === 'ArrowFunctionExpression' ||
             node.init?.type === 'FunctionExpression') {
           if (node.id?.name) {
             const funcName = node.id.name;
             analysis.functions.push(funcName);
             analysis.metrics.wmc++;
             allDefinedFunctions.add(funcName);
-            
+
             // 함수 타입 분류
             if (/^[A-Z]/.test(funcName)) {
               analysis.components.push(funcName);
               analysis.dependencyAnalysis.components.push(funcName);
               functionTypes[funcName] = 'component';
+              // 응집도 분석: 컴포넌트 등록
+              currentComponent = funcName;
+              componentMethods[funcName] = [];
             } else if (/^(handle|on)[A-Z]/.test(funcName)) {
               analysis.eventHandlers.push(funcName);
               functionTypes[funcName] = 'handler';
+              // 응집도 분석: 현재 컴포넌트의 메서드로 등록
+              if (currentComponent && componentMethods[currentComponent]) {
+                componentMethods[currentComponent].push(funcName);
+                methodSharedState[funcName] = new Set();
+                methodCalls[funcName] = new Set();
+              }
             } else {
               functionTypes[funcName] = 'helper';
+              // 응집도 분석: 현재 컴포넌트의 메서드로 등록
+              if (currentComponent && componentMethods[currentComponent]) {
+                componentMethods[currentComponent].push(funcName);
+                methodSharedState[funcName] = new Set();
+                methodCalls[funcName] = new Set();
+              }
             }
-            
+
             analysis.dependencyAnalysis.allFunctions.push(funcName);
-            
+
             if (!functionDependencies[funcName]) {
               functionDependencies[funcName] = {};
             }
-            
+
             // 이 함수 내부를 순회할 때 현재 함수 컨텍스트 설정
             const previousFunction = currentFunction;
             currentFunction = funcName;
-            
+
             for (const key in node.init) {
               if (key === 'loc' || key === 'range' || key === 'start' || key === 'end') continue;
               const child = node.init[key];
@@ -144,13 +184,17 @@ const analyzeCode = (code, filename) => {
                 traverse(child, depth + 1, funcName);
               }
             }
-            
+
             currentFunction = previousFunction;
             return;
           }
         } else {
           if (node.id?.name) {
             analysis.variables.push(node.id.name);
+            // 응집도 분석: 현재 메서드가 사용하는 상태 추적
+            if (currentFunction && methodSharedState[currentFunction]) {
+              methodSharedState[currentFunction].add(node.id.name);
+            }
           }
         }
       }
@@ -175,7 +219,7 @@ const analyzeCode = (code, filename) => {
       // 함수 호출 감지 (모든 함수 호출)
       if (node.type === 'CallExpression') {
         let calleeName = null;
-        
+
         // 일반 함수 호출: funcName()
         if (node.callee?.type === 'Identifier') {
           calleeName = node.callee.name;
@@ -184,35 +228,64 @@ const analyzeCode = (code, filename) => {
         else if (node.callee?.type === 'MemberExpression' && node.callee?.property?.name) {
           // setState 등은 제외하고 싶으면 여기서 필터링
         }
-        
+
         if (calleeName) {
           // Hooks 추적
           if (calleeName.startsWith('use')) {
             analysis.hooks.push(calleeName);
+            // 응집도 분석: useState 등의 상태 추적
+            if (currentFunction && methodSharedState[currentFunction]) {
+              methodSharedState[currentFunction].add(`hook:${calleeName}`);
+            }
           }
-          
+
           // 현재 함수에서 다른 함수 호출 추적
           if (currentFunction && calleeName !== currentFunction) {
             // 빌트인 함수 제외 (alert, console, setTimeout 등)
-            const builtins = ['alert', 'console', 'setTimeout', 'setInterval', 'clearTimeout', 
+            const builtins = ['alert', 'console', 'setTimeout', 'setInterval', 'clearTimeout',
                            'clearInterval', 'parseInt', 'parseFloat', 'isNaN', 'isFinite',
                            'encodeURI', 'decodeURI', 'encodeURIComponent', 'decodeURIComponent',
                            'JSON', 'Math', 'Date', 'Array', 'Object', 'String', 'Number',
                            'Boolean', 'Symbol', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise',
                            'fetch', 'require'];
-            
+
             // React hooks와 setState는 제외
             const isHook = calleeName.startsWith('use');
-            const isSetState = calleeName.startsWith('set') && calleeName.length > 3 && 
+            const isSetState = calleeName.startsWith('set') && calleeName.length > 3 &&
                               calleeName[3] === calleeName[3].toUpperCase();
-            
+
             if (!builtins.includes(calleeName) && !isHook && !isSetState) {
               if (!functionDependencies[currentFunction]) {
                 functionDependencies[currentFunction] = {};
               }
-              functionDependencies[currentFunction][calleeName] = 
+              functionDependencies[currentFunction][calleeName] =
                 (functionDependencies[currentFunction][calleeName] || 0) + 1;
+
+              // 응집도 분석: 메서드 간 호출 관계 추적
+              if (methodCalls[currentFunction]) {
+                methodCalls[currentFunction].add(calleeName);
+              }
             }
+
+            // 응집도 분석: setState 호출 시 상태 공유로 간주
+            if (isSetState) {
+              if (currentFunction && methodSharedState[currentFunction]) {
+                methodSharedState[currentFunction].add(`state:${calleeName}`);
+              }
+            }
+          }
+        }
+      }
+
+      // 응집도 분석: Identifier를 통한 상태/변수 참조 추적
+      if (node.type === 'Identifier' && currentFunction && methodSharedState[currentFunction]) {
+        const name = node.name;
+        // 상태 변수 참조 패턴 (소문자로 시작하고 일반적인 상태명 패턴)
+        if (name && !name.startsWith('set') && /^[a-z]/.test(name)) {
+          // 일반적인 키워드 제외
+          const keywords = ['true', 'false', 'null', 'undefined', 'this', 'props', 'state', 'e', 'event', 'err', 'error', 'i', 'j', 'k', 'index', 'key', 'value', 'item', 'data', 'result', 'response', 'res', 'req'];
+          if (!keywords.includes(name) && name.length > 1) {
+            methodSharedState[currentFunction].add(`var:${name}`);
           }
         }
       }
@@ -321,6 +394,108 @@ const analyzeCode = (code, filename) => {
     
     analysis.dependencyAnalysis.dependencies = dependencies;
     analysis.dependencyAnalysis.functionTypes = functionTypes;
+
+    // LCOM4 응집도 계산
+    const calculateLCOM4 = (componentName, methods) => {
+      if (methods.length === 0) {
+        return { lcom4: 1, connectedComponents: [], methodConnections: [] };
+      }
+
+      if (methods.length === 1) {
+        return {
+          lcom4: 1,
+          connectedComponents: [[methods[0]]],
+          methodConnections: [],
+          methods: methods.map(m => ({
+            name: m,
+            sharedState: Array.from(methodSharedState[m] || []),
+            calls: Array.from(methodCalls[m] || [])
+          }))
+        };
+      }
+
+      // 메서드 간 연결 그래프 구축
+      const graph = {};
+      const methodConnectionsList = [];
+      methods.forEach(m => { graph[m] = new Set(); });
+
+      // 같은 상태를 공유하거나 서로 호출하는 메서드 연결
+      for (let i = 0; i < methods.length; i++) {
+        for (let j = i + 1; j < methods.length; j++) {
+          const m1 = methods[i];
+          const m2 = methods[j];
+          const state1 = methodSharedState[m1] || new Set();
+          const state2 = methodSharedState[m2] || new Set();
+          const calls1 = methodCalls[m1] || new Set();
+          const calls2 = methodCalls[m2] || new Set();
+
+          // 공유 상태 확인
+          const sharedState = [...state1].filter(s => state2.has(s));
+          const hasSharedState = sharedState.length > 0;
+
+          // 호출 관계 확인
+          const callsEachOther = calls1.has(m2) || calls2.has(m1);
+
+          if (hasSharedState || callsEachOther) {
+            graph[m1].add(m2);
+            graph[m2].add(m1);
+            methodConnectionsList.push({
+              from: m1,
+              to: m2,
+              reason: hasSharedState ? 'shared_state' : 'method_call',
+              sharedState: sharedState
+            });
+          }
+        }
+      }
+
+      // BFS로 연결 요소 찾기
+      const visited = new Set();
+      const connectedComponents = [];
+
+      methods.forEach(method => {
+        if (!visited.has(method)) {
+          const component = [];
+          const queue = [method];
+          visited.add(method);
+
+          while (queue.length > 0) {
+            const current = queue.shift();
+            component.push(current);
+
+            graph[current].forEach(neighbor => {
+              if (!visited.has(neighbor)) {
+                visited.add(neighbor);
+                queue.push(neighbor);
+              }
+            });
+          }
+          connectedComponents.push(component);
+        }
+      });
+
+      return {
+        lcom4: connectedComponents.length,
+        connectedComponents,
+        methodConnections: methodConnectionsList,
+        methods: methods.map(m => ({
+          name: m,
+          sharedState: Array.from(methodSharedState[m] || []),
+          calls: Array.from(methodCalls[m] || [])
+        }))
+      };
+    };
+
+    // 각 컴포넌트의 응집도 계산
+    Object.entries(componentMethods).forEach(([componentName, methods]) => {
+      const cohesionData = calculateLCOM4(componentName, methods);
+      analysis.cohesionAnalysis.components.push({
+        name: componentName,
+        type: functionTypes[componentName] || 'component',
+        methodCount: methods.length,
+        ...cohesionData
+      });
+    });
 
     // 유지보수 지수 계산
     const V = analysis.loc;
@@ -1112,6 +1287,462 @@ const DependencyDiagram = ({ dependencyAnalysis }) => {
   );
 };
 
+// ============================================
+// 응집도(Cohesion) 다이어그램 - LCOM4 기반
+// ============================================
+const CohesionDiagram = ({ cohesionAnalysis }) => {
+  const [hoveredMethod, setHoveredMethod] = useState(null);
+  const [hoveredConnection, setHoveredConnection] = useState(null);
+  const [selectedComponent, setSelectedComponent] = useState(null);
+
+  const { components } = cohesionAnalysis;
+
+  if (!components || components.length === 0) {
+    return (
+      <div style={styles.emptyDiagram}>
+        <p>📭 분석된 컴포넌트가 없습니다.</p>
+        <p style={{ fontSize: '13px', color: '#9ca3af' }}>
+          React 컴포넌트를 분석하면 응집도 다이어그램이 생성됩니다.
+        </p>
+      </div>
+    );
+  }
+
+  // 색상 팔레트 (연결 요소별 다른 색상)
+  const componentColors = [
+    { fill: '#dbeafe', stroke: '#3b82f6', text: '#1e40af' },
+    { fill: '#dcfce7', stroke: '#22c55e', text: '#166534' },
+    { fill: '#fef3c7', stroke: '#f59e0b', text: '#92400e' },
+    { fill: '#fce7f3', stroke: '#ec4899', text: '#9d174d' },
+    { fill: '#e0e7ff', stroke: '#6366f1', text: '#4338ca' },
+    { fill: '#f3e8ff', stroke: '#a855f7', text: '#7e22ce' },
+  ];
+
+  // LCOM4 값에 따른 컴포넌트 배경색
+  const getLCOM4Color = (lcom4) => {
+    if (lcom4 === 1) return { bg: '#dcfce7', border: '#22c55e', text: '#166534', label: '높은 응집도' };
+    if (lcom4 === 2) return { bg: '#fef3c7', border: '#f59e0b', text: '#92400e', label: '보통 응집도' };
+    if (lcom4 === 3) return { bg: '#fed7aa', border: '#f97316', text: '#9a3412', label: '낮은 응집도' };
+    return { bg: '#fee2e2', border: '#ef4444', text: '#991b1b', label: '매우 낮은 응집도' };
+  };
+
+  const displayComponent = selectedComponent
+    ? components.find(c => c.name === selectedComponent)
+    : components[0];
+
+  if (!displayComponent) return null;
+
+  const { name, methodCount, lcom4, connectedComponents, methodConnections, methods } = displayComponent;
+  const lcom4Style = getLCOM4Color(lcom4);
+
+  // SVG 크기 계산
+  const svgWidth = 800;
+  const svgHeight = Math.max(450, (methods?.length || 0) * 60 + 150);
+  const centerX = svgWidth / 2;
+  const centerY = svgHeight / 2 + 30;
+
+  // 메서드 위치 계산 (연결 요소별로 그룹화)
+  const methodPositions = {};
+  let totalMethodsPlaced = 0;
+
+  connectedComponents?.forEach((group, groupIndex) => {
+    const groupSize = group.length;
+    const angleOffset = (groupIndex * Math.PI * 2) / (connectedComponents.length || 1);
+    const groupRadius = 120 + groupIndex * 30;
+
+    group.forEach((method, methodIndex) => {
+      const angle = angleOffset + (methodIndex / groupSize) * (Math.PI * 2 / (connectedComponents.length || 1)) - Math.PI / 2;
+      const radius = connectedComponents.length === 1
+        ? 140 + methodIndex * 20
+        : groupRadius + methodIndex * 25;
+
+      methodPositions[method] = {
+        x: centerX + radius * Math.cos(angle + methodIndex * 0.3),
+        y: centerY + radius * Math.sin(angle + methodIndex * 0.3),
+        groupIndex,
+        color: componentColors[groupIndex % componentColors.length]
+      };
+      totalMethodsPlaced++;
+    });
+  });
+
+  // 연결선 렌더링
+  const renderConnection = (conn, idx) => {
+    const fromPos = methodPositions[conn.from];
+    const toPos = methodPositions[conn.to];
+
+    if (!fromPos || !toPos) return null;
+
+    const isHovered = hoveredConnection === idx;
+    const dx = toPos.x - fromPos.x;
+    const dy = toPos.y - fromPos.y;
+    const midX = (fromPos.x + toPos.x) / 2;
+    const midY = (fromPos.y + toPos.y) / 2;
+
+    // 곡선 오프셋
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const perpX = (-dy / dist) * 20;
+    const perpY = (dx / dist) * 20;
+
+    const color = conn.reason === 'shared_state' ? '#3b82f6' : '#22c55e';
+
+    return (
+      <g
+        key={idx}
+        onMouseEnter={() => setHoveredConnection(idx)}
+        onMouseLeave={() => setHoveredConnection(null)}
+        style={{ cursor: 'pointer' }}
+      >
+        <path
+          d={`M ${fromPos.x} ${fromPos.y} Q ${midX + perpX} ${midY + perpY} ${toPos.x} ${toPos.y}`}
+          fill="none"
+          stroke={isHovered ? '#6366f1' : color}
+          strokeWidth={isHovered ? 3 : 2}
+          strokeDasharray={conn.reason === 'shared_state' ? 'none' : '5,5'}
+          opacity={isHovered ? 1 : 0.6}
+          style={{ transition: 'all 0.2s ease' }}
+        />
+        {/* 연결 타입 표시 */}
+        {isHovered && (
+          <foreignObject
+            x={midX + perpX - 80}
+            y={midY + perpY - 40}
+            width="1"
+            height="1"
+            style={{ overflow: 'visible' }}
+          >
+            <div style={styles.cohesionTooltip}>
+              <div style={{ fontWeight: '600', marginBottom: '4px' }}>
+                {conn.from} ↔ {conn.to}
+              </div>
+              <div style={{ fontSize: '11px', color: '#9ca3af' }}>
+                {conn.reason === 'shared_state' ? '🔗 공유 상태' : '📞 호출 관계'}
+              </div>
+              {conn.sharedState?.length > 0 && (
+                <div style={{ fontSize: '10px', color: '#60a5fa', marginTop: '4px' }}>
+                  공유: {conn.sharedState.slice(0, 3).join(', ')}
+                </div>
+              )}
+            </div>
+          </foreignObject>
+        )}
+      </g>
+    );
+  };
+
+  // 메서드 노드 렌더링
+  const renderMethodNode = (method) => {
+    const pos = methodPositions[method.name];
+    if (!pos) return null;
+
+    const isHovered = hoveredMethod === method.name;
+    const nodeWidth = 110;
+    const nodeHeight = 36;
+
+    return (
+      <g
+        key={method.name}
+        onMouseEnter={() => setHoveredMethod(method.name)}
+        onMouseLeave={() => setHoveredMethod(null)}
+        style={{ cursor: 'pointer' }}
+        transform={`translate(${pos.x}, ${pos.y})`}
+      >
+        {/* 노드 그림자 */}
+        <rect
+          x={-nodeWidth / 2 + 2}
+          y={-nodeHeight / 2 + 2}
+          width={nodeWidth}
+          height={nodeHeight}
+          rx="8"
+          fill="rgba(0,0,0,0.08)"
+        />
+        {/* 노드 배경 */}
+        <rect
+          x={-nodeWidth / 2}
+          y={-nodeHeight / 2}
+          width={nodeWidth}
+          height={nodeHeight}
+          rx="8"
+          fill={isHovered ? pos.color.stroke : pos.color.fill}
+          stroke={pos.color.stroke}
+          strokeWidth={isHovered ? 3 : 2}
+          style={{ transition: 'all 0.2s ease' }}
+        />
+        {/* 메서드 이름 */}
+        <text
+          x={0}
+          y={0}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          fontSize="11"
+          fontWeight="600"
+          fill={isHovered ? '#ffffff' : pos.color.text}
+        >
+          {method.name.length > 12 ? method.name.slice(0, 10) + '...' : method.name}
+        </text>
+        {/* 호버 툴팁 */}
+        {isHovered && (
+          <foreignObject
+            x={nodeWidth / 2 + 10}
+            y={-50}
+            width="1"
+            height="1"
+            style={{ overflow: 'visible' }}
+          >
+            <div style={styles.cohesionTooltip}>
+              <div style={{ fontWeight: '600', marginBottom: '6px' }}>{method.name}</div>
+              {method.sharedState?.length > 0 && (
+                <div style={{ fontSize: '11px', marginBottom: '4px' }}>
+                  <span style={{ color: '#60a5fa' }}>사용 상태:</span>
+                  <div style={{ color: '#d1d5db', fontSize: '10px' }}>
+                    {method.sharedState.slice(0, 4).map(s => s.replace(/^(var:|state:|hook:)/, '')).join(', ')}
+                  </div>
+                </div>
+              )}
+              {method.calls?.length > 0 && (
+                <div style={{ fontSize: '11px' }}>
+                  <span style={{ color: '#34d399' }}>호출 함수:</span>
+                  <div style={{ color: '#d1d5db', fontSize: '10px' }}>
+                    {method.calls.slice(0, 3).join(', ')}
+                  </div>
+                </div>
+              )}
+            </div>
+          </foreignObject>
+        )}
+      </g>
+    );
+  };
+
+  return (
+    <div style={styles.cohesionContainer}>
+      {/* 응집도 설명 영역 */}
+      <div style={styles.cohesionExplanation}>
+        <div style={styles.explanationHeader}>
+          <span style={styles.explanationIcon}>🧩</span>
+          <span style={styles.explanationTitle}>응집도(Cohesion) 이해하기</span>
+        </div>
+        <div style={styles.cohesionExplanationContent}>
+          <div style={styles.cohesionExplanationItem}>
+            <p style={styles.explanationText}>
+              <strong>응집도</strong>는 한 클래스(컴포넌트)가 <span style={styles.highlightText}>하나의 책임에 얼마나 집중</span>되어 있는지를 나타냅니다.
+            </p>
+          </div>
+          <div style={styles.cohesionExplanationItem}>
+            <p style={styles.explanationText}>
+              <strong>LCOM4</strong>: 내부 메서드 그래프의 연결 요소 개수입니다.<br/>
+              <span style={styles.highlightText}>값이 클수록 여러 책임이 섞여 있어 리팩토링이 필요</span>할 수 있습니다.
+            </p>
+          </div>
+        </div>
+        <div style={styles.cohesionLegendRow}>
+          <div style={styles.cohesionLegendItem}>
+            <span style={{ ...styles.cohesionLegendDot, background: '#22c55e' }}></span>
+            <span>LCOM4 = 1: 이상적 (높은 응집도)</span>
+          </div>
+          <div style={styles.cohesionLegendItem}>
+            <span style={{ ...styles.cohesionLegendDot, background: '#f59e0b' }}></span>
+            <span>LCOM4 = 2: 보통</span>
+          </div>
+          <div style={styles.cohesionLegendItem}>
+            <span style={{ ...styles.cohesionLegendDot, background: '#ef4444' }}></span>
+            <span>LCOM4 ≥ 3: 리팩토링 권장</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 컴포넌트 선택 탭 */}
+      {components.length > 1 && (
+        <div style={styles.cohesionTabs}>
+          {components.map((comp) => {
+            const style = getLCOM4Color(comp.lcom4);
+            return (
+              <button
+                key={comp.name}
+                style={{
+                  ...styles.cohesionTab,
+                  background: selectedComponent === comp.name || (!selectedComponent && comp === components[0])
+                    ? style.bg
+                    : '#f3f4f6',
+                  borderColor: selectedComponent === comp.name || (!selectedComponent && comp === components[0])
+                    ? style.border
+                    : '#e5e7eb',
+                  color: style.text,
+                }}
+                onClick={() => setSelectedComponent(comp.name)}
+              >
+                {comp.name}
+                <span style={styles.cohesionTabBadge}>
+                  LCOM4: {comp.lcom4}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 선택된 컴포넌트 정보 헤더 */}
+      <div style={{
+        ...styles.cohesionHeader,
+        background: lcom4Style.bg,
+        borderColor: lcom4Style.border,
+      }}>
+        <div style={styles.cohesionHeaderLeft}>
+          <span style={{ ...styles.cohesionComponentName, color: lcom4Style.text }}>
+            ⚛️ {name}
+          </span>
+          <span style={styles.cohesionMethodCount}>
+            {methodCount}개 메서드
+          </span>
+        </div>
+        <div style={styles.cohesionHeaderRight}>
+          <div style={{
+            ...styles.lcom4Badge,
+            background: lcom4Style.border,
+          }}>
+            <span style={styles.lcom4Value}>LCOM4: {lcom4}</span>
+          </div>
+          <span style={{ ...styles.lcom4Label, color: lcom4Style.text }}>
+            {lcom4Style.label}
+          </span>
+        </div>
+      </div>
+
+      {/* 다이어그램 */}
+      {methods && methods.length > 0 ? (
+        <svg width={svgWidth} height={svgHeight} style={{ overflow: 'visible' }}>
+          {/* 연결 요소별 영역 표시 (배경) */}
+          {connectedComponents?.map((group, groupIndex) => {
+            if (group.length < 2) return null;
+
+            const groupPositions = group.map(m => methodPositions[m]).filter(Boolean);
+            if (groupPositions.length < 2) return null;
+
+            const minX = Math.min(...groupPositions.map(p => p.x)) - 70;
+            const maxX = Math.max(...groupPositions.map(p => p.x)) + 70;
+            const minY = Math.min(...groupPositions.map(p => p.y)) - 40;
+            const maxY = Math.max(...groupPositions.map(p => p.y)) + 40;
+
+            const color = componentColors[groupIndex % componentColors.length];
+
+            return (
+              <rect
+                key={`group-${groupIndex}`}
+                x={minX}
+                y={minY}
+                width={maxX - minX}
+                height={maxY - minY}
+                rx="16"
+                fill={color.fill}
+                fillOpacity="0.3"
+                stroke={color.stroke}
+                strokeWidth="2"
+                strokeDasharray="8,4"
+              />
+            );
+          })}
+
+          {/* 연결선 렌더링 */}
+          {methodConnections?.map(renderConnection)}
+
+          {/* 메서드 노드 렌더링 */}
+          {methods?.map(renderMethodNode)}
+
+          {/* 연결 요소 라벨 */}
+          {connectedComponents?.map((group, groupIndex) => {
+            if (group.length === 0) return null;
+
+            const firstPos = methodPositions[group[0]];
+            if (!firstPos) return null;
+
+            const color = componentColors[groupIndex % componentColors.length];
+
+            return (
+              <text
+                key={`label-${groupIndex}`}
+                x={firstPos.x}
+                y={firstPos.y - 55}
+                textAnchor="middle"
+                fontSize="11"
+                fontWeight="600"
+                fill={color.text}
+              >
+                그룹 {groupIndex + 1} ({group.length}개)
+              </text>
+            );
+          })}
+        </svg>
+      ) : (
+        <div style={styles.noMethodsMessage}>
+          <p>이 컴포넌트에는 분석 가능한 내부 메서드가 없습니다.</p>
+          <p style={{ fontSize: '12px', color: '#9ca3af' }}>
+            이벤트 핸들러나 헬퍼 함수가 컴포넌트 내부에 정의되어 있어야 응집도 분석이 가능합니다.
+          </p>
+        </div>
+      )}
+
+      {/* 범례 */}
+      <div style={styles.cohesionDiagramLegend}>
+        <div style={styles.legendSection}>
+          <span style={styles.legendSectionTitle}>연결 유형</span>
+          <div style={styles.legendItems}>
+            <div style={styles.legendItem}>
+              <svg width="30" height="10">
+                <line x1="0" y1="5" x2="30" y2="5" stroke="#3b82f6" strokeWidth="2" />
+              </svg>
+              <span>공유 상태</span>
+            </div>
+            <div style={styles.legendItem}>
+              <svg width="30" height="10">
+                <line x1="0" y1="5" x2="30" y2="5" stroke="#22c55e" strokeWidth="2" strokeDasharray="5,5" />
+              </svg>
+              <span>호출 관계</span>
+            </div>
+          </div>
+        </div>
+        <div style={styles.legendDivider}></div>
+        <div style={styles.legendSection}>
+          <span style={styles.legendSectionTitle}>연결 요소 (그룹)</span>
+          <div style={styles.legendItems}>
+            {componentColors.slice(0, 4).map((color, i) => (
+              <div key={i} style={styles.legendItem}>
+                <div style={{ ...styles.legendBox, background: color.fill, border: `2px solid ${color.stroke}` }}></div>
+                <span>그룹 {i + 1}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* 통계 요약 */}
+      <div style={styles.cohesionStats}>
+        <div style={styles.statItem}>
+          <span style={styles.statValue}>{components.length}</span>
+          <span style={styles.statLabel}>분석된 컴포넌트</span>
+        </div>
+        <div style={styles.statItem}>
+          <span style={{ ...styles.statValue, color: '#22c55e' }}>
+            {components.filter(c => c.lcom4 === 1).length}
+          </span>
+          <span style={styles.statLabel}>높은 응집도</span>
+        </div>
+        <div style={styles.statItem}>
+          <span style={{ ...styles.statValue, color: '#f59e0b' }}>
+            {components.filter(c => c.lcom4 === 2).length}
+          </span>
+          <span style={styles.statLabel}>보통 응집도</span>
+        </div>
+        <div style={styles.statItem}>
+          <span style={{ ...styles.statValue, color: '#ef4444' }}>
+            {components.filter(c => c.lcom4 >= 3).length}
+          </span>
+          <span style={styles.statLabel}>리팩토링 권장</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   const [screen, setScreen] = useState('upload');
   const [results, setResults] = useState(null);
@@ -1247,6 +1878,10 @@ const App = () => {
       totalWMC: validResults.reduce((sum, r) => sum + (r.metrics?.wmc || 0), 0),
       totalAnalysisTime: validResults.reduce((sum, r) => sum + parseFloat(r.analysisTime || 0), 0).toFixed(2),
       dependencyAnalysis: combinedDependencyAnalysis,
+      // 응집도 분석 통합
+      cohesionAnalysis: {
+        components: validResults.flatMap(r => r.cohesionAnalysis?.components || [])
+      },
     };
 
     setResults({ files: analysisResults, summary });
@@ -1526,6 +2161,20 @@ const App = () => {
           </p>
           <DependencyDiagram
             dependencyAnalysis={results.summary.dependencyAnalysis}
+          />
+        </div>
+
+        {/* 응집도(Cohesion) 다이어그램 */}
+        <div style={styles.cohesionCard}>
+          <h3 style={styles.chartTitle}>
+            <span style={styles.chartIcon}>🧩</span> 응집도(Cohesion) 다이어그램
+          </h3>
+          <p style={styles.chartHint}>
+            * 컴포넌트 내부 메서드 간의 관계를 분석하여 LCOM4 기반 응집도를 시각화합니다.
+            연결 요소가 많을수록 여러 책임이 섞여 있어 리팩토링을 고려해보세요.
+          </p>
+          <CohesionDiagram
+            cohesionAnalysis={results.summary.cohesionAnalysis}
           />
         </div>
 
@@ -2035,6 +2684,167 @@ const styles = {
     boxShadow: '0 2px 12px rgba(0, 0, 0, 0.06)',
     border: '1px solid #f3f4f6',
     overflow: 'auto',
+  },
+  cohesionCard: {
+    maxWidth: '1200px',
+    margin: '0 auto 24px',
+    padding: '24px',
+    background: '#ffffff',
+    borderRadius: '16px',
+    boxShadow: '0 2px 12px rgba(0, 0, 0, 0.06)',
+    border: '1px solid #f3f4f6',
+    overflow: 'auto',
+  },
+  cohesionContainer: {
+    padding: '20px',
+    minWidth: '800px',
+  },
+  cohesionExplanation: {
+    background: 'linear-gradient(135deg, #faf5ff 0%, #f3e8ff 100%)',
+    border: '1px solid #e9d5ff',
+    borderRadius: '12px',
+    padding: '20px',
+    marginBottom: '24px',
+  },
+  cohesionExplanationContent: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+    gap: '16px',
+    marginBottom: '16px',
+  },
+  cohesionExplanationItem: {
+    background: '#ffffff',
+    borderRadius: '8px',
+    padding: '14px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+  },
+  cohesionLegendRow: {
+    display: 'flex',
+    gap: '20px',
+    flexWrap: 'wrap',
+    background: '#fefce8',
+    padding: '12px 16px',
+    borderRadius: '8px',
+    border: '1px solid #fef08a',
+  },
+  cohesionLegendItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    fontSize: '12px',
+    color: '#64748b',
+  },
+  cohesionLegendDot: {
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+  },
+  cohesionTabs: {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '20px',
+    flexWrap: 'wrap',
+  },
+  cohesionTab: {
+    padding: '10px 16px',
+    borderRadius: '10px',
+    border: '2px solid',
+    background: '#f3f4f6',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    transition: 'all 0.2s ease',
+  },
+  cohesionTabBadge: {
+    fontSize: '11px',
+    fontWeight: '600',
+    padding: '2px 8px',
+    borderRadius: '10px',
+    background: 'rgba(0,0,0,0.1)',
+  },
+  cohesionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '16px 20px',
+    borderRadius: '12px',
+    border: '2px solid',
+    marginBottom: '20px',
+  },
+  cohesionHeaderLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+  },
+  cohesionComponentName: {
+    fontSize: '18px',
+    fontWeight: '700',
+  },
+  cohesionMethodCount: {
+    fontSize: '13px',
+    color: '#6b7280',
+    background: '#f3f4f6',
+    padding: '4px 10px',
+    borderRadius: '12px',
+  },
+  cohesionHeaderRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
+  lcom4Badge: {
+    padding: '8px 16px',
+    borderRadius: '20px',
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  lcom4Value: {
+    fontSize: '14px',
+  },
+  lcom4Label: {
+    fontSize: '13px',
+    fontWeight: '600',
+  },
+  cohesionTooltip: {
+    background: '#1f2937',
+    color: '#ffffff',
+    padding: '12px 16px',
+    borderRadius: '10px',
+    fontSize: '12px',
+    lineHeight: '1.5',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)',
+    whiteSpace: 'nowrap',
+    minWidth: '160px',
+    maxWidth: '280px',
+  },
+  noMethodsMessage: {
+    textAlign: 'center',
+    padding: '60px 40px',
+    color: '#6b7280',
+    background: '#f9fafb',
+    borderRadius: '12px',
+    border: '1px dashed #d1d5db',
+  },
+  cohesionDiagramLegend: {
+    display: 'flex',
+    gap: '32px',
+    marginTop: '24px',
+    paddingTop: '20px',
+    borderTop: '1px solid #e5e7eb',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+  },
+  cohesionStats: {
+    display: 'flex',
+    gap: '32px',
+    marginTop: '20px',
+    paddingTop: '16px',
+    borderTop: '1px solid #e5e7eb',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
   },
   diagramContainer: {
     padding: '20px',
